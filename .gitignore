@@ -11,7 +11,4 @@ dep
 lib
 linkmap.txt
 rsrc-rez
-emulator/*.img
-emulator/*.ROM
-emulator/*.image
-emulator/shared/
+emulator/
