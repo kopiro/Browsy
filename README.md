@@ -74,68 +74,27 @@ sudo dd if=Browsy.dsk of=/dev/sdX bs=512
 
 ## Testing
 
-### Mini vMac (no networking)
+### System 6 with Mini vMac (no networking)
 
 Mini vMac emulates a Mac Plus (System 6). Good for UI testing; no TCP/IP.
 
-1. Get a Mini vMac build and a System 6 disk image, place them in `emulator/`:
-   - `emulator/Mini vMac.app`
-   - `emulator/6.08_40MB.img` (boot disk)
-2. Run:
-   ```sh
-   make run
-   ```
-   This builds `Browsy.dsk` and opens Mini vMac with both disks.
-
-### Basilisk II (with MacTCP networking)
-
-Basilisk II emulates a Quadra 650 running System 7.5.3, with SLiRP networking
-(NAT via host). This is required to test HTTP.
-
-#### Setup (once)
-
-1. Obtain these files (not included in the repo — too large):
-   - `emulator/Quadra-650.ROM` — 32-bit Quadra 650 ROM (1 MB)
-   - `emulator/System7.img` — System 7.5.3 disk image
-   - `emulator/shared/MacTCP-2-0.6.dsk` — MacTCP 2.0.6 installer floppy
-
-2. The prefs file at `emulator/basilisk/basilisk_ii_prefs` is preconfigured.
-   Basilisk II reads `~/.basilisk_ii_prefs` on launch, so symlink it:
-
-   ```sh
-   ln -sf "$(pwd)/emulator/basilisk/basilisk_ii_prefs" ~/.basilisk_ii_prefs
-   ```
-
-3. Install MacTCP 2.0.6 inside System 7 (one-time setup):
-   - Boot Basilisk II, mount `MacTCP-2-0.6.dsk`, run the installer.
-   - Open MacTCP control panel, click **More...**, set:
-     - Gateway: `10.0.2.2`
-     - Domain: your domain or leave blank
-     - DNS server: `10.0.2.3`
-   - Select **Server** for IP address (DHCP-style via SLiRP).
-   - Restart the emulator.
-
-#### Running Browsy
-
 ```sh
-make run-basilisk
+make run-sys6
 ```
 
-This copies `Browsy.bin` to `emulator/shared/` and opens Basilisk II.
+Opens Basilisk II with System 6. `Browsy.dsk` mounts as a floppy containing
+both Browsy and `page.html`. Navigate to `file:///Browsy/page.html`.
 
-Inside Basilisk II, `Browsy.bin` is in the `Unix` shared drive. Double-click
-it to launch. You can also mount `Browsy.dsk` directly from the desktop —
-it appears as a floppy disk.
+### System 7 with Basilisk II (networking with MacTCP)
 
-#### Network details (SLiRP)
+Basilisk II emulates a 68k Mac.
 
-| Address   | Purpose            |
-| --------- | ------------------ |
-| 10.0.2.2  | Host gateway       |
-| 10.0.2.3  | DNS resolver       |
-| 10.0.2.15 | Guest IP (typical) |
+Emulates a Quadra 650 running System 7.5.3 with SLiRP networking (NAT via
+host). Required to test HTTP.
 
-SLiRP provides outbound TCP only. Inbound connections are not supported.
+```sh
+make run-sys7
+```
 
 ## Stuff used / how it works
 

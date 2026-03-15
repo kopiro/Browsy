@@ -160,7 +160,7 @@ void HandleMouseDown(EventRecord *event, WindowPtr topWin) {
 
 				r.top = 100;
 				r.left = 150;
-				r.bottom -= (GetMBarHeight()<<1);
+				r.bottom -= (Sys7 ? GetMBarHeight() : 20) << 1;
 				r.right -= 20;
 				//SetRect(&r, MaxWindowWidth+SBarSize-1, 64,
 					//MaxWindowWidth+SBarSize-1, gMaxHeight);

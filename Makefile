@@ -31,7 +31,7 @@ RSRC_DAT=$(RSRC_HEX:.hex=.dat) $(RSRC_TXT:.txt=.dat)
 
 MINI_VMAC_DIR ?= emulator
 MINI_VMAC_APP = $(MINI_VMAC_DIR)/Mini vMac.app
-MINI_VMAC_SYS_DISK ?= $(MINI_VMAC_DIR)/6.08_40MB.img
+MINI_VMAC_SYS_DISK ?= $(MINI_VMAC_DIR)/System6.img
 
 DOCKER_IMAGE ?= retro68-nopie
 DOCKER_TOOLCHAIN = /Retro68-build/toolchain
@@ -62,6 +62,7 @@ $(BIN).dsk: $(BIN).bin
 	hformat -l $(BIN) $@ >/dev/null && \
 	hmount $@ >/dev/null && \
 	hcopy -m $< : >/dev/null && \
+	if [ -f page.html ]; then hcopy -t page.html : && hattrib -t TEXT -c ttxt page.html; fi >/dev/null && \
 	humount >/dev/null
 
 %.o: %.c
@@ -159,13 +160,20 @@ $(SHAREDIR)/$(BIN): $(BIN).APPL
 
 BASILISK_DIR = emulator/basilisk
 BASILISK_APP = $(BASILISK_DIR)/BasiliskII.app
-BASILISK_PREFS = $(BASILISK_DIR)/basilisk_ii_prefs
+BASILISK_BIN = $(BASILISK_APP)/Contents/MacOS/BasiliskII
+BASILISK_PREFS_SYS7 = $(BASILISK_DIR)/basilisk_ii_prefs_sys7
+BASILISK_PREFS_SYS6 = $(BASILISK_DIR)/basilisk_ii_prefs_sys6
 BASILISK_SHARED = emulator/shared
 
-run-basilisk: $(BIN).bin
+run-basilisk: run-sys7
+
+run-sys7: $(BIN).bin $(BIN).dsk
+	@mkdir -p "$(BASILISK_SHARED)"
 	@cp $(BIN).bin "$(BASILISK_SHARED)/$(BIN).bin"
-	@echo "Browsy.bin copied to shared folder. Open it from 'Unix' drive in Basilisk II."
-	open "$(CURDIR)/$(BASILISK_APP)" --args --config "$(CURDIR)/$(BASILISK_PREFS)"
+	"$(CURDIR)/$(BASILISK_BIN)" --config "$(CURDIR)/$(BASILISK_PREFS_SYS7)"
+
+run-sys6: $(BIN).dsk
+	"$(CURDIR)/$(MINI_VMAC_APP)/Contents/MacOS/minivmac" "$(CURDIR)/$(MINI_VMAC_SYS_DISK)" "$(CURDIR)/$(BIN).dsk"
 
 # Misc
 
@@ -177,4 +185,4 @@ clean:
 		$(OBJ) $(CDEP) rsrc/*/*.dat rsrc-rez linkmap.txt $(LIBS)
 	rm -rf .rsrc .finf
 
-.PHONY: clean wc run docker-build docker-dsk
+.PHONY: clean wc run run-basilisk run-sys6 docker-build docker-dsk
