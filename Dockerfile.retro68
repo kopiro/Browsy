@@ -1,0 +1,13 @@
+FROM ghcr.io/autc04/retro68
+
+# Rebuild Elf2Mac and Rez as non-PIE so they work under Docker Desktop Rosetta on Apple Silicon
+RUN cd /tmp \
+    && git clone --depth=1 https://github.com/autc04/Retro68.git \
+    && mkdir build-host && cd build-host \
+    && cmake /tmp/Retro68 \
+        -DCMAKE_INSTALL_PREFIX=/Retro68-build/toolchain \
+        -DCMAKE_EXE_LINKER_FLAGS="-no-pie" \
+    && make -j$(nproc) Elf2Mac Rez \
+    && cp Elf2Mac/Elf2Mac /Retro68-build/toolchain/bin/Elf2Mac \
+    && cp Rez/Rez /Retro68-build/toolchain/bin/Rez \
+    && cd / && rm -rf /tmp/Retro68 /tmp/build-host

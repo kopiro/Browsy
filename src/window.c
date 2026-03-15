@@ -43,6 +43,7 @@ void Scroll(PageWindow *pWin, int h, int v);
 void FrameAddressBar(PageWindow *pWin);
 void PageWindowDrawGrowIcon(PageWindow *pWin);
 HistoryItem *HistoryItemNewNext(HistoryItem *base);
+void DisposeHistoryItem(HistoryItem *item);
 void DrawToolbarButtons(PageWindow *pWin);
 void HandleNavButtonClick(PageWindow *pWin, Point where);
 void PopupNavMenu(PageWindow *pWin, Rect *buttonRect);
@@ -76,15 +77,18 @@ void InitPageWindows() {
 
 PageWindow* GetPageWindow(WindowPtr win) {
 	WindowPeek peek = (WindowPeek) win;
+	Handle h;
 	if (!win) return nil;
 	if (peek->windowKind >= userKind) {
-		return (PageWindow*) GetWRefCon(win);
+		h = (Handle) GetWRefCon(win);
+		if (h) return (PageWindow *) *h;
 	}
 	return nil;
 }
 
 void ClosePageWindow(PageWindow *pWin) {
 	HistoryItem *history = pWin->history, *curr, *next;
+	Handle h = RecoverHandle((Ptr)pWin);
 	TEDispose(pWin->addressBarTE);
 	TEDispose(pWin->contentTE);
 	TEDispose(pWin->statusTE);
@@ -94,19 +98,16 @@ void ClosePageWindow(PageWindow *pWin) {
 	if (history) {
 		for (curr = history->next; curr; curr = next) {
 			next = curr->next;
-			if (curr->address) free(curr->address);
-			if (curr->title) free(curr->title);
-			free(curr);
+			DisposeHistoryItem(curr);
 		}
 		for (curr = history; curr; curr = next) {
 			next = curr->prev;
-			if (curr->address) free(curr->address);
-			if (curr->title) free(curr->title);
-			free(curr);
+			DisposeHistoryItem(curr);
 		}
 	}
 
-	free(pWin);
+	HUnlock(h);
+	DisposeHandle(h);
 }
 
 void CloseAll() {
@@ -122,13 +123,18 @@ void CloseAll() {
 }
 
 PageWindow* NewPageWindow() {
-	//Str255 name = "\pUntitled";
-	PageWindow* pWin = (PageWindow*) malloc(sizeof(PageWindow));
+	Handle h;
+	PageWindow* pWin;
 	WindowPtr window = GetNewWindow(defaultWindow, nil, (WindowPtr)-1L);
 	TEHandle addressBarTE, contentTE, statusTE;
 	TEPtr te;
 	Rect destRect, viewRect, scrollRect, pr;
-	//ControlHandle vScrollBar;
+
+	h = NewHandle(sizeof(PageWindow));
+	if (!h) return nil;
+	MoveHHi(h);
+	HLock(h);
+	pWin = (PageWindow *) *h;
 
 	SetPort(window);
 	pr = window->portRect;
@@ -211,7 +217,7 @@ PageWindow* NewPageWindow() {
 	/*pWin->toolbarBackBtn = NewControl(window, &toolbarRectBack, "\p", true,
 		0, 0, 0, pushButProc, navBtn);*/
 
-	SetWRefCon(window, (long) pWin);
+	SetWRefCon(window, (long) h);
 	//SetWTitle(window, name);
 	pWin->window = window;
 	pWin->location = "";
@@ -737,14 +743,32 @@ void RecievePageData(URIRequest* req) {
 }
 */
 
-// delete items after given item, and replace with new one.
+void DisposeHistoryItem(HistoryItem *item) {
+	Handle h;
+	if (!item) return;
+	if (item->address) free(item->address);
+	if (item->title) free(item->title);
+	h = RecoverHandle((Ptr)item);
+	if (h) {
+		HUnlock(h);
+		DisposeHandle(h);
+	}
+}
+
+/* Allocate a packed Handle: HistoryItem struct + address string inline */
 HistoryItem *HistoryItemNewNext(HistoryItem *base) {
 	HistoryItem *curr, *next, *newNext;
-	newNext = (HistoryItem *)malloc(sizeof(HistoryItem));
-	if (!newNext) {
+	Handle h;
+
+	h = NewHandle(sizeof(HistoryItem));
+	if (!h) {
 		ErrorAlert("Unable to create history item.");
 		return NULL;
 	}
+	MoveHHi(h);
+	HLock(h);
+	newNext = (HistoryItem *) *h;
+
 	newNext->address = NULL;
 	newNext->title = NULL;
 	newNext->prev = base;
@@ -752,9 +776,7 @@ HistoryItem *HistoryItemNewNext(HistoryItem *base) {
 	if (base != NULL) {
 		for (curr = base->next; curr; curr = next) {
 			next = curr->next;
-			if (curr->address) free(curr->address);
-			if (curr->title) free(curr->title);
-			free(curr);
+			DisposeHistoryItem(curr);
 		}
 		base->next = newNext;
 	}
@@ -1078,6 +1100,7 @@ void PageURIOnStatus(void *obj, short httpStatus)
 		DisposeDOMDocument(pWin->document);
 	}
 	pWin->document = NewDOMDocument();
+	DOMDocumentInitParser(pWin->document, pWin->contentTE, pWin->window);
 	InvalRect(&(*pWin->contentTE)->viewRect);
 	EraseRect(&(*pWin->contentTE)->viewRect);
 
@@ -1112,11 +1135,7 @@ void PageURIOnMessageBegin(void *obj)
 void PageURIOnData(void *obj, char *data, short len)
 {
 	PageWindow *pWin = (PageWindow *)obj;
-	//DOMDocumentParseAppend(pWin->document, data, len);
-
-	//PageWindowAdjustScrollBars(pWin);
-
-	TEAppendText(data, len, pWin->contentTE);
+	DOMDocumentParseAppend(pWin->document, data, len);
 
 	InvalRect(&(*pWin->contentTE)->viewRect);
 	EraseRect(&(*pWin->contentTE)->viewRect);
@@ -1125,5 +1144,9 @@ void PageURIOnData(void *obj, char *data, short len)
 void PageURIOnClose(void *obj, short err)
 {
 	PageWindow *pWin = (PageWindow *)obj;
+	if (pWin->document) {
+		DOMDocumentFinishParse(pWin->document);
+	}
+	PageWindowAdjustScrollBars(pWin);
 	LoadingEnded(pWin);
 }

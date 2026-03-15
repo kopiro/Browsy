@@ -8,9 +8,10 @@
 Boolean HasColorQD;
 Boolean Sys7;
 
+/* Packed into a single Handle: struct + address + title strings inline */
 typedef struct HistoryItem {
-	char *title;
-	char *address;
+	char *title;     /* points into same Handle, or NULL */
+	char *address;   /* points into same Handle, or NULL */
 	struct HistoryItem *prev;
 	struct HistoryItem *next;
 } HistoryItem;

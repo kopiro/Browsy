@@ -24,20 +24,43 @@ void DisposeNodes(Node *node) {
 }
 
 DOMDocument *NewDOMDocument() {
-	DOMDocument *doc = (DOMDocument *)malloc(sizeof(DOMDocument));
+	Handle h = NewHandle(sizeof(DOMDocument));
+	DOMDocument *doc;
+	if (!h) return NULL;
+	MoveHHi(h);
+	HLock(h);
+	doc = (DOMDocument *) *h;
 	doc->data = NULL;
 	doc->rootNode = NewNode();
 	doc->tokenizer = NewTokenizer();
+	doc->parserInited = false;
 	return doc;
 }
 
 void DisposeDOMDocument(DOMDocument *doc) {
+	Handle h;
 	DisposeNodes(doc->rootNode);
 	DisposeTokenizer(doc->tokenizer);
-	free(doc);
+	h = RecoverHandle((Ptr)doc);
+	if (h) {
+		HUnlock(h);
+		DisposeHandle(h);
+	}
+}
+
+void DOMDocumentInitParser(DOMDocument *doc, TEHandle te, WindowPtr win) {
+	HtmlParserInit(&doc->parser, te, win);
+	doc->parserInited = true;
 }
 
 void DOMDocumentParseAppend(DOMDocument *doc, Ptr data, long bytes) {
-	//tokenize(doc->tokenizer);
+	if (doc->parserInited) {
+		HtmlParserFeed(&doc->parser, data, (short)bytes);
+	}
+}
 
+void DOMDocumentFinishParse(DOMDocument *doc) {
+	if (doc->parserInited) {
+		HtmlParserEnd(&doc->parser);
+	}
 }

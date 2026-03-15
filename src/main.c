@@ -258,42 +258,31 @@ Boolean GotRequiredParams(AppleEvent *event) {
 }	/* CAppleEvent::GotRequiredParams */
 
 
-void HandleOpenAE(AppleEvent *event, AppleEvent *reply, long refCon) {
+pascal OSErr HandleOpenAE(const AppleEvent *event, AppleEvent *reply, long refCon) {
 #pragma unused(reply, refCon)
 	Handle		docList = NULL;
 	long		i, itemCount;
-	FSRef		myFSRef;
+	FSSpec		myFSSpec;
 	AEDescList	theList;
 	OSErr		oe;
-	//PageWindow	*pwin = GetPageWindow(FrontWindow());
-	if ((oe = AEGetParamDesc( event, keyDirectObject, typeAEList, &theList)) != noErr) {
-		//DebugStr("\pAEGetParamDesc");
-		return;
+
+	if ((oe = AEGetParamDesc( (AppleEvent *)event, keyDirectObject, typeAEList, &theList)) != noErr) {
+		return oe;
 	}
 
-
-	/*if (!GotRequiredParams(event)) {
-		//DebugStr("\pGotRequiredParams");
-		return;
-	}*/
-
 	if ((oe = AECountItems( &theList, &itemCount)) != noErr) {
-		//DebugStr("\pAECountItems");
-		return;
+		return oe;
 	}
 
 	for (i = 1; i <= itemCount; i++) {
-		//oe = AEGetNthPtr( &theList, i, typeFSRef, &aeKeyword, &actualType,
-						//(Ptr) &myFSRef, sizeof( FSRef), &actualSize);
-		oe = AEGetNthPtr( &theList, i, typeFSRef, NULL, NULL, &myFSRef, sizeof(FSRef), NULL);
+		oe = AEGetNthPtr( &theList, i, typeFSS, NULL, NULL, &myFSSpec, sizeof(FSSpec), NULL);
 
 		if (oe == noErr) {
 			NewPageWindow();
-			//OpenEditWindow(&myFSS);
 		}
 	}
 	AEDisposeDesc(&theList);
-	// event was handled successfully
+	return noErr;
 }
 
 pascal OSErr HandleAppleEvent(AppleEvent *event,AppleEvent *reply, long refCon) {
@@ -342,9 +331,8 @@ pascal OSErr HandleAppleEvent(AppleEvent *event,AppleEvent *reply, long refCon) 
 void InitAppleEvents() {
 	if (Sys7) {
 		AEInstallEventHandler(typeWildCard, typeWildCard,
-			(AEEventHandlerUPP) NewAEEventHandlerProc((ProcPtr) HandleAppleEvent), 0, FALSE);
+			NewAEEventHandlerUPP((AEEventHandlerProcPtr) HandleAppleEvent), 0, false);
 		AEInstallEventHandler(kCoreEventClass, kAEOpenDocuments,
-			NewAEEventHandlerUPP(HandleOpenAE), 0, FALSE);
-			//(EventHandlerProcPtr) AppleEventHandler, 0, FALSE);
+			NewAEEventHandlerUPP(HandleOpenAE), 0, false);
 	}
 }

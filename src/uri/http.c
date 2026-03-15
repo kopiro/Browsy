@@ -20,8 +20,9 @@ struct HTTPURIData {
 	http_parser parser;
 	short err;
 	short port;
-	char host[256];
-	char path[256];
+	Boolean messageComplete;
+	char *host;
+	char *path;
 };
 
 void *HTTPProviderInit(URI *uri, char *uriStr);
@@ -85,20 +86,11 @@ void *HTTPProviderInit(URI *uri, char *uriStr)
 		return NULL;
 	}
 	hostLen = urlParser.field_data[UF_HOST].len;
-	if (hostLen > sizeof data->host) {
-		alertf("URL host too long");
-		return NULL;
-	}
 
 	if (!(urlParser.field_set & (1 << UF_PATH))) {
-		// missing path
 		pathLen = 0;
 	} else {
 		pathLen = urlParser.field_data[UF_PATH].len;
-		if (pathLen > sizeof data->path) {
-			alertf("URL path too long");
-			return NULL;
-		}
 	}
 
 	data = malloc(sizeof(struct HTTPURIData));
@@ -106,21 +98,32 @@ void *HTTPProviderInit(URI *uri, char *uriStr)
 		return NULL;
 	}
 
-	data->port = urlParser.port ? urlParser.port : 80;
-	strncpy(data->host, uriStr + urlParser.field_data[UF_HOST].off, hostLen);
-	strncpy(data->path, uriStr + urlParser.field_data[UF_PATH].off, pathLen);
-
-	// special case: use "/" for empty path
-	if (pathLen == 0) {
-		data->path[0] = '/';
-		pathLen++;
+	data->host = malloc(hostLen + 1);
+	/* +2 to allow for "/" default path */
+	data->path = malloc((pathLen > 0 ? pathLen : 1) + 1);
+	if (!data->host || !data->path) {
+		if (data->host) free(data->host);
+		if (data->path) free(data->path);
+		free(data);
+		return NULL;
 	}
 
-	data->path[pathLen] = '\0';
+	data->port = urlParser.port ? urlParser.port : 80;
+	memcpy(data->host, uriStr + urlParser.field_data[UF_HOST].off, hostLen);
 	data->host[hostLen] = '\0';
+
+	if (pathLen == 0) {
+		data->path[0] = '/';
+		data->path[1] = '\0';
+	} else {
+		memcpy(data->path, uriStr + urlParser.field_data[UF_PATH].off, pathLen);
+		data->path[pathLen] = '\0';
+	}
 
 	tcpStream = NewStream();
 	if (!tcpStream) {
+		free(data->host);
+		free(data->path);
 		free(data);
 		return NULL;
 	}
@@ -128,6 +131,7 @@ void *HTTPProviderInit(URI *uri, char *uriStr)
 	data->uri = uri;
 	data->tcpStream = tcpStream;
 	data->err = 0;
+	data->messageComplete = false;
 	http_parser_init(&data->parser, HTTP_RESPONSE);
 	data->parser.data = data;
 
@@ -140,6 +144,8 @@ void HTTPProviderClose(URI *uri, void *providerData)
 {
 	struct HTTPURIData *data = (struct HTTPURIData *)providerData;
 	StreamClose(data->tcpStream);
+	free(data->host);
+	free(data->path);
 	free(data);
 }
 
@@ -201,11 +207,9 @@ void TCPOnData(void *consumerData, char *data, short len)
 	*/
 
 	nparsed = http_parser_execute(&hData->parser, &parserSettings, data, len);
-	if (nparsed != len) {
-		// parser had an error. close connection
-		alertf("parsing error %u/%u for text (%lu): %.*s", (int)nparsed, (int)len, len, (int)len, data);
-		//StreamClose(hData->tcpStream);
-		//URIClosed(hData->uri, -1);
+	if (nparsed != len && hData->parser.http_errno != HPE_OK) {
+		StreamClose(hData->tcpStream);
+		URIClosed(hData->uri, -1);
 	}
 
 }
@@ -228,6 +232,9 @@ void TCPOnClose(void *consumerData)
 {
 	struct HTTPURIData *data = (struct HTTPURIData *)consumerData;
 	http_parser_execute(&data->parser, &parserSettings, "", 0);
+	if (!data->messageComplete) {
+		URIClosed(data->uri, data->err);
+	}
 }
 
 void TCPOnEnd(void *consumerData)
@@ -276,7 +283,8 @@ int HTTPOnBody(http_parser *parser, const char *at, size_t len)
 int HTTPOnMessageComplete(http_parser *parser)
 {
 	struct HTTPURIData *hData = (struct HTTPURIData *)parser->data;
-	//TODO: check if it happens multiple times
+	hData->messageComplete = true;
 	URIClosed(hData->uri, hData->err);
+	return 0;
 }
 
