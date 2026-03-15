@@ -57,14 +57,14 @@ Produces `Browsy.dsk` — an 800 KB HFS floppy image containing `Browsy.bin`.
 
 The disk image can be written to a real floppy (1.44 MB HD or 800 KB DD) with:
 
-```sh
-# macOS
-sudo dd if=Browsy.dsk of=/dev/diskN bs=512
-```
-
 Find the correct disk node with `diskutil list` before running `dd`. Replace
 `diskN` with the raw disk device (e.g. `disk3`, not `disk3s1`). **Eject the
 disk first** with `diskutil unmountDisk /dev/diskN`.
+
+```sh
+# macOS - if disk14 is your floppy
+sudo diskutil unmountDisk disk14 && sudo dd if=Browsy.dsk of=/dev/disk14 bs=512 && sudo diskutil unmountDisk disk14
+```
 
 On Linux:
 
@@ -101,6 +101,7 @@ Basilisk II emulates a Quadra 650 running System 7.5.3, with SLiRP networking
 
 2. The prefs file at `emulator/basilisk/basilisk_ii_prefs` is preconfigured.
    Basilisk II reads `~/.basilisk_ii_prefs` on launch, so symlink it:
+
    ```sh
    ln -sf "$(pwd)/emulator/basilisk/basilisk_ii_prefs" ~/.basilisk_ii_prefs
    ```
@@ -129,7 +130,7 @@ it appears as a floppy disk.
 #### Network details (SLiRP)
 
 | Address   | Purpose            |
-|-----------|--------------------|
+| --------- | ------------------ |
 | 10.0.2.2  | Host gateway       |
 | 10.0.2.3  | DNS resolver       |
 | 10.0.2.15 | Guest IP (typical) |

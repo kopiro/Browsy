@@ -1,8 +1,7 @@
 rom /Users/flaviod/Developer/Browsy/emulator/Quadra-650.ROM
 disk /Users/flaviod/Developer/Browsy/emulator/System7.img
-disk /Users/flaviod/Developer/Browsy/emulator/shared/MacTCP-2-0.6.dsk
+disk /Users/flaviod/Developer/Browsy/emulator/MacTCP-2-0.6.dsk
 disk /Users/flaviod/Developer/Browsy/Browsy.dsk
-extfs /Users/flaviod/Developer/Browsy/emulator/shared
 screen win/640/480
 seriala /dev/null
 serialb /dev/null
