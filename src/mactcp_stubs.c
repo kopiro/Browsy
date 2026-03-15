@@ -14,8 +14,17 @@
 
 /* Folders.h redirect -- FindFolder and friends are in Multiverse.h */
 
+#ifndef _GestaltDispatch
+#define _GestaltDispatch _Gestalt
+#endif
+
 static Handle  gDNRCodeHndl = nil;
 static ProcPtr gDNRCodePtr  = nil;
+
+static Boolean TrapExists(short theTrap)
+{
+    return GetTrapAddress(_Unimplemented) != GetTrapAddress(theTrap);
+}
 
 static void GetSystemFolder(short *vRefNumP, long *dirIDP)
 {
@@ -34,7 +43,8 @@ static void GetCPanelFolder(short *vRefNumP, long *dirIDP)
     Boolean hasFolderMgr = false;
     long feature;
 
-    if (Gestalt(gestaltFindFolderAttr, &feature) == noErr)
+    if (TrapExists(_GestaltDispatch) &&
+        Gestalt(gestaltFindFolderAttr, &feature) == noErr)
         hasFolderMgr = true;
 
     if (!hasFolderMgr) {
@@ -67,7 +77,7 @@ static short SearchFolderForDNRP(long targetType, long targetCreator,
         if (fi.fileParam.ioFlFndrInfo.fdType == targetType &&
             fi.fileParam.ioFlFndrInfo.fdCreator == targetCreator) {
             refnum = HOpenResFile(vRefNum, dirID, filename, fsRdPerm);
-            if (GetIndResource('dnrp', 1) == NULL)
+            if (Get1IndResource('dnrp', 1) == NULL)
                 CloseResFile(refnum);
             else
                 return refnum;
@@ -107,17 +117,17 @@ OSErr OpenResolver(char *fileName)
 {
     short refnum;
     OSErr rc;
-    (void)fileName;
 
     if (gDNRCodePtr != nil)
         return noErr;
 
     refnum = OpenOurRF();
 
-    gDNRCodeHndl = GetIndResource('dnrp', 1);
+    gDNRCodeHndl = Get1IndResource('dnrp', 1);
     if (gDNRCodeHndl == nil)
         return ResError();
 
+    ReserveMem(16000L);
     DetachResource(gDNRCodeHndl);
     if (refnum != -1)
         CloseResFile(refnum);
@@ -172,8 +182,8 @@ OSErr EnumCache(EnumResultUPP resultproc, Ptr userDataPtr)
     if (gDNRCodePtr == nil)
         return notOpenErr;
 
-    return CallEnumCacheProc(gDNRCodePtr, ENUMCACHE,
-                             resultproc, userDataPtr);
+    return CallEnumCacheProc(gDNRCodePtr, ENUMCACHE, resultproc,
+                             userDataPtr);
 }
 
 OSErr AddrToName(unsigned long addr, struct hostInfo *rtnStruct,

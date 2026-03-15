@@ -130,7 +130,7 @@ enum {
     precedence    = 0x10
 };
 
-typedef void (*TCPNotifyProcPtr)(
+typedef pascal void (*TCPNotifyProcPtr)(
     StreamPtr tcpStream, unsigned short eventCode,
     Ptr userDataPtr, unsigned short terminReason,
     struct ICMPReport *icmpMsg);

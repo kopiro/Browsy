@@ -10,6 +10,11 @@
 #define NUM_ALT_ADDRS 4
 
 struct hostInfo {
+    /*
+     * Some modern 68k toolchains need this leading pad for MacTCP's
+     * StrToAddr/AddrToName results to land on the expected offsets.
+     */
+    long    _pad;
     long    rtnCode;
     char    cname[255];
     ip_addr addr[NUM_ALT_ADDRS];
@@ -57,34 +62,41 @@ typedef pascal void (*EnumResultProcPtr)(struct cacheEntryRecord *entryPtr, char
 typedef EnumResultProcPtr EnumResultUPP;
 
 /*
- * DNR dispatch macros -- for 68k (non-CFM), these call through the
- * code pointer loaded from the 'dnrp' resource.
+ * The DNR resource is entered as a normal code resource function with the
+ * selector passed as the first argument. Give each call its real signature
+ * so the compiler lays out arguments correctly on 68k.
  */
-typedef OSErr (*DNRProcPtr)();
+typedef OSErr (*OpenResolverProcPtr)(UInt32 selector, char *fileName);
+typedef OSErr (*CloseResolverProcPtr)(UInt32 selector);
+typedef OSErr (*StrToAddrProcPtr)(UInt32 selector, char *hostName,
+                                  struct hostInfo *hostInfoPtr,
+                                  ResultUPP resultProc, Ptr userDataPtr);
+typedef OSErr (*AddrToStrProcPtr)(UInt32 selector, unsigned long addr,
+                                  char *addrStr);
+typedef OSErr (*EnumCacheProcPtr)(UInt32 selector, EnumResultUPP resultProc,
+                                  Ptr userDataPtr);
+typedef OSErr (*AddrToNameProcPtr)(UInt32 selector, ip_addr addr,
+                                   struct hostInfo *hostInfoPtr,
+                                   ResultUPP resultProc, Ptr userDataPtr);
+typedef OSErr (*HInfoProcPtr)(UInt32 selector, char *hostName,
+                              struct returnRec *returnRecPtr,
+                              ResultProc2UPP resultProc, Ptr userDataPtr);
+typedef OSErr (*MXInfoProcPtr)(UInt32 selector, char *hostName,
+                               struct returnRec *returnRecPtr,
+                               ResultProc2UPP resultProc, Ptr userDataPtr);
 
-#define CallOpenResolverProc(proc, sel, fn) \
-    (*(DNRProcPtr)(proc))((sel), (fn))
-
+#define CallOpenResolverProc(proc, sel, fileName) \
+    ((OpenResolverProcPtr)(proc))((sel), (fileName))
 #define CallCloseResolverProc(proc, sel) \
-    (*(DNRProcPtr)(proc))((sel))
-
-#define CallStrToAddrProc(proc, sel, host, rtn, cb, ud) \
-    (*(DNRProcPtr)(proc))((sel), (host), (rtn), (cb), (ud))
-
-#define CallAddrToStrProc(proc, sel, addr, str) \
-    (*(DNRProcPtr)(proc))((sel), (addr), (str))
-
-#define CallEnumCacheProc(proc, sel, cb, ud) \
-    (*(DNRProcPtr)(proc))((sel), (cb), (ud))
-
-#define CallAddrToNameProc(proc, sel, addr, rtn, cb, ud) \
-    (*(DNRProcPtr)(proc))((sel), (addr), (rtn), (cb), (ud))
-
-#define CallHInfoProc(proc, sel, host, rtn, cb, ud) \
-    (*(DNRProcPtr)(proc))((sel), (host), (rtn), (cb), (ud))
-
-#define CallMXInfoProc(proc, sel, host, rtn, cb, ud) \
-    (*(DNRProcPtr)(proc))((sel), (host), (rtn), (cb), (ud))
+    ((CloseResolverProcPtr)(proc))((sel))
+#define CallStrToAddrProc(proc, sel, hostName, hostInfoPtr, resultProc, userDataPtr) \
+    ((StrToAddrProcPtr)(proc))((sel), (hostName), (hostInfoPtr), (resultProc), (userDataPtr))
+#define CallAddrToStrProc(proc, sel, addr, addrStr) \
+    ((AddrToStrProcPtr)(proc))((sel), (addr), (addrStr))
+#define CallEnumCacheProc(proc, sel, resultProc, userDataPtr) \
+    ((EnumCacheProcPtr)(proc))((sel), (resultProc), (userDataPtr))
+#define CallAddrToNameProc(proc, sel, addr, hostInfoPtr, resultProc, userDataPtr) \
+    ((AddrToNameProcPtr)(proc))((sel), (addr), (hostInfoPtr), (resultProc), (userDataPtr))
 
 /* Public API */
 OSErr OpenResolver(char *fileName);

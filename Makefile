@@ -1,6 +1,6 @@
 BIN     = Browsy
-TOOLCHAIN ?= /opt/Retro68-build/toolchain
-ARCH    ?= m68k-unknown-elf
+TOOLCHAIN ?= /Retro68-build/toolchain
+ARCH    ?= m68k-apple-macos
 CC      = $(TOOLCHAIN)/bin/$(ARCH)-gcc
 LD      = $(TOOLCHAIN)/bin/$(ARCH)-g++
 AS      = $(TOOLCHAIN)/bin/$(ARCH)-as
@@ -36,6 +36,8 @@ MINI_VMAC_SYS_DISK ?= $(MINI_VMAC_DIR)/System6.img
 DOCKER_IMAGE ?= retro68-nopie
 DOCKER_TOOLCHAIN = /Retro68-build/toolchain
 DOCKER_ARCH = m68k-apple-macos
+DOCKER      ?= docker
+IN_DOCKER_BUILD ?= 0
 
 ifndef V
 	QUIET_CC   = @echo ' CC   ' $<;
@@ -49,8 +51,10 @@ endif
 
 # Main
 
-all: deps $(BIN).bin
+ifeq ($(IN_DOCKER_BUILD),1)
+all: build-local
 
+build-local: deps $(LIBS) $(BIN).bin
 -include $(CDEP)
 
 $(BIN).bin: $(OBJ) $(LIBS) rsrc-rez
@@ -70,6 +74,18 @@ $(BIN).dsk: $(BIN).bin
 
 %.o: %.s
 	$(QUIET_AS)$(AS) $(SFLAGS) -o $@ $<
+
+else
+
+all: $(BIN).bin
+
+$(BIN).bin: FORCE
+	@$(MAKE) docker-build
+
+$(BIN).dsk: FORCE
+	@$(MAKE) docker-dsk
+
+endif
 
 # Resources
 
@@ -101,7 +117,15 @@ rsrc-rez: $(RSRC_DAT)
 
 # Dependencies
 
-deps: $(LIBS) $(LIB_DIR)
+deps:
+	@test -f "$(DEP_DIR)/http-parser/http_parser.h" || { \
+		echo "Missing vendored dependency: $(DEP_DIR)/http-parser"; \
+		exit 1; \
+	}
+	@test -f "$(DEP_DIR)/c-streams/src/stream.h" || { \
+		echo "Missing vendored dependency: $(DEP_DIR)/c-streams"; \
+		exit 1; \
+	}
 
 $(LIB_DIR)/libhttp_parser.a: $(DEP_DIR)/http-parser/libhttp_parser.a $(LIB_DIR)
 	cp $< $@
@@ -123,28 +147,28 @@ $(DEP_DIR)/c-streams/libcstreams.a: $(DEP_DIR)/c-streams
 		-c -o src/tcpstream.o src/tcpstream.c && \
 	$(AR) rcs libcstreams.a src/stream.o src/filestream.o src/tcpstream.o
 
-$(DEP_DIR)/http-parser: | $(DEP_DIR)
-	git clone https://github.com/joyent/http-parser $@
-
-$(DEP_DIR)/c-streams: | $(DEP_DIR)
-	git clone https://github.com/clehner/c-streams $@
-
 $(DEP_DIR) $(LIB_DIR):
 	mkdir -p $@
 
 # Docker build
 
+docker-image:
+	@$(DOCKER) image inspect $(DOCKER_IMAGE) >/dev/null 2>&1 || \
+		$(DOCKER) build --platform linux/amd64 --load -f Dockerfile.retro68 -t $(DOCKER_IMAGE) .
+
 docker-build:
-	docker run --rm --platform linux/amd64 \
+	@$(MAKE) docker-image
+	$(DOCKER) run --rm \
 		-v $(CURDIR):/root/build -w /root/build \
 		$(DOCKER_IMAGE) \
-		make all TOOLCHAIN=$(DOCKER_TOOLCHAIN) ARCH=$(DOCKER_ARCH)
+		make build-local IN_DOCKER_BUILD=1 TOOLCHAIN=$(DOCKER_TOOLCHAIN) ARCH=$(DOCKER_ARCH)
 
 docker-dsk:
-	docker run --rm --platform linux/amd64 \
+	@$(MAKE) docker-image
+	$(DOCKER) run --rm \
 		-v $(CURDIR):/root/build -w /root/build \
 		$(DOCKER_IMAGE) \
-		make $(BIN).dsk TOOLCHAIN=$(DOCKER_TOOLCHAIN) ARCH=$(DOCKER_ARCH)
+		make $(BIN).dsk IN_DOCKER_BUILD=1 TOOLCHAIN=$(DOCKER_TOOLCHAIN) ARCH=$(DOCKER_ARCH)
 
 # Running
 
@@ -163,16 +187,22 @@ BASILISK_APP = $(BASILISK_DIR)/BasiliskII.app
 BASILISK_BIN = $(BASILISK_APP)/Contents/MacOS/BasiliskII
 BASILISK_PREFS_SYS7 = $(BASILISK_DIR)/basilisk_ii_prefs_sys7
 BASILISK_PREFS_SYS6 = $(BASILISK_DIR)/basilisk_ii_prefs_sys6
-BASILISK_SHARED = emulator/shared
+SYSTEM7_IMG = emulator/System7.img
+SYSTEM7_SIZE_MB ?= 80
+
+system7-img:
+	@$(MAKE) docker-image
+	$(DOCKER) run --rm \
+		-v $(CURDIR):/root/build -w /root/build \
+		$(DOCKER_IMAGE) \
+		sh -lc 'rm -f "$(SYSTEM7_IMG)" && dd if=/dev/zero of="$(SYSTEM7_IMG)" bs=1M count=$(SYSTEM7_SIZE_MB) 2>/dev/null && hformat -l System7 "$(SYSTEM7_IMG)" >/dev/null'
 
 run-basilisk: run-sys7
 
-run-sys7: $(BIN).bin $(BIN).dsk
-	@mkdir -p "$(BASILISK_SHARED)"
-	@cp $(BIN).bin "$(BASILISK_SHARED)/$(BIN).bin"
+run-sys7:
 	"$(CURDIR)/$(BASILISK_BIN)" --config "$(CURDIR)/$(BASILISK_PREFS_SYS7)"
 
-run-sys6: $(BIN).dsk
+run-sys6:
 	"$(CURDIR)/$(MINI_VMAC_APP)/Contents/MacOS/minivmac" "$(CURDIR)/$(MINI_VMAC_SYS_DISK)" "$(CURDIR)/$(BIN).dsk"
 
 # Misc
@@ -185,4 +215,6 @@ clean:
 		$(OBJ) $(CDEP) rsrc/*/*.dat rsrc-rez linkmap.txt $(LIBS)
 	rm -rf .rsrc .finf
 
-.PHONY: clean wc run run-basilisk run-sys6 docker-build docker-dsk
+FORCE:
+
+.PHONY: all build-local clean deps docker-build docker-dsk docker-image system7-img wc run run-basilisk run-sys6 FORCE

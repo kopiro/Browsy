@@ -4,7 +4,6 @@
 *.d
 rsrc-args
 rsrc/*/*.dat
-dep
 lib
 linkmap.txt
 rsrc-rez

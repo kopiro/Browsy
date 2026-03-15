@@ -24,6 +24,7 @@ struct HTTPURIData {
 	short err;
 	short port;
 	Boolean messageComplete;
+	Boolean sawData;
 	Boolean shouldRedirect;
 	Boolean isLocationHeader;
 	short redirectCount;
@@ -268,6 +269,7 @@ void *HTTPProviderInit(URI *uri, char *uriStr)
 	data->tcpStream = tcpStream;
 	data->err = 0;
 	data->messageComplete = false;
+	data->sawData = false;
 	data->shouldRedirect = false;
 	data->isLocationHeader = false;
 	data->redirectCount = 0;
@@ -304,6 +306,7 @@ void HTTPProviderRequest(URI *uri, void *providerData, HTTPMethod *method,
 		return;
 	}
 
+	alertf("HTTP GET %s:%hd%s", data->host, data->port, data->path);
 	StreamOpen(data->tcpStream);
 }
 
@@ -333,6 +336,7 @@ void TCPOnOpen(void *consumerData)
 	//alertf("sending http request (%hu): %s", reqLen, reqMsg);
 
 	// Send the request
+	alertf("TCP opened; sending request");
 	StreamWrite(hData->tcpStream, reqMsg, reqLen);
 }
 
@@ -340,6 +344,11 @@ void TCPOnData(void *consumerData, char *data, short len)
 {
 	struct HTTPURIData *hData = (struct HTTPURIData *)consumerData;
 	size_t nparsed;
+
+	if (!hData->sawData) {
+		hData->sawData = true;
+		alertf("HTTP received %hd bytes", len);
+	}
 
 	nparsed = http_parser_execute(&hData->parser, &parserSettings, data, len);
 

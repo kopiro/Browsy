@@ -37,7 +37,9 @@ installs `hfsutils` inside the container.
 make deps
 ```
 
-This clones `http-parser` and `c-streams` into `dep/`.
+This verifies the vendored `http-parser` and `c-streams` sources are present in
+`dep/`. The repo includes these dependencies directly; the build does not clone
+them at build time.
 
 ### Build the app binary
 
@@ -62,8 +64,8 @@ Find the correct disk node with `diskutil list` before running `dd`. Replace
 disk first** with `diskutil unmountDisk /dev/diskN`.
 
 ```sh
-# macOS - if disk14 is your floppy
-sudo diskutil unmountDisk disk14 && sudo dd if=Browsy.dsk of=/dev/disk14 bs=512 && sudo diskutil unmountDisk disk14
+# macOS - if disk8 is your floppy
+sudo diskutil unmountDisk disk8 && sudo dd if=Browsy.dsk of=/dev/disk8 bs=512 && sudo diskutil unmountDisk disk8
 ```
 
 On Linux:
@@ -91,6 +93,18 @@ Basilisk II emulates a 68k Mac.
 
 Emulates a Quadra 650 running System 7.5.3 with SLiRP networking (NAT via
 host). Required to test HTTP.
+
+Create a repo-local hard disk image once with:
+
+```sh
+make system7-img
+```
+
+This creates `emulator/System7.img` as an 80 MB HFS volume. You still need to
+install System 7 onto that image before `make run-sys7` will boot successfully.
+The checked-in Basilisk prefs mount the boot disk image, the target hard disk,
+and expose `emulator/system7-install/` via Basilisk's Unix/shared folder so the
+original Apple installer parts can be accessed inside the emulator.
 
 ```sh
 make run-sys7
