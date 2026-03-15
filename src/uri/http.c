@@ -1,36 +1,37 @@
 #include <MacTypes.h>
+#include <Devices.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdbool.h>
 #include <string.h>
-#include <ctype.h>
+#include <OSUtils.h>
 #include "Browsy.h"
+#include "AddressXlation.h"
+#include "MacTCP.h"
 #include "stream.h"
-#include "tcpstream.h"
 #include "utils.h"
 #include "uri.h"
 #include "http_parser.h"
 #include "uri/http.h"
 
 #define HTTP_UA "Browsy/" BROWSY_VERSION " (Macintosh; N; 68K)"
-// "Lynx/2.8 (compatible; Browsy/" VERSION " (Macintosh; N; 68K)"
-
-#define MAX_REDIRECTS 5
+#define HTTP_CREATE_BUF_SIZE 4096
+#define HTTP_RECV_BUF_SIZE 1024
+#define HTTP_HEADER_BUF_SIZE 8192
 
 struct HTTPURIData {
 	URI *uri;
-	Stream *tcpStream;
-	http_parser parser;
-	short err;
 	short port;
-	Boolean messageComplete;
-	Boolean sawData;
-	Boolean shouldRedirect;
-	Boolean isLocationHeader;
-	short redirectCount;
 	char *host;
 	char *path;
-	char *redirectLocation;
+};
+
+static short gTCPRefNum;
+static Boolean gResolverOpen;
+
+struct HTTPResolveState {
+	Boolean done;
+	struct hostInfo *hostInfo;
 };
 
 void *HTTPProviderInit(URI *uri, char *uriStr);
@@ -44,200 +45,315 @@ struct URIProvider *httpURIProvider = &(URIProvider) {
 	.close = HTTPProviderClose
 };
 
-int HTTPOnMessageBegin(http_parser *parser);
-int HTTPOnStatus(http_parser *parser, const char *at, size_t len);
-int HTTPOnHeaderField(http_parser *parser, const char *at, size_t len);
-int HTTPOnHeaderValue(http_parser *parser, const char *at, size_t len);
-int HTTPOnHeadersComplete(http_parser *parser);
-int HTTPOnBody(http_parser *parser, const char *at, size_t len);
-int HTTPOnMessageComplete(http_parser *parser);
-
-http_parser_settings parserSettings = {
-	.on_message_begin		= HTTPOnMessageBegin,
-	.on_status				= HTTPOnStatus,
-	.on_header_field		= HTTPOnHeaderField,
-	.on_header_value		= HTTPOnHeaderValue,
-	.on_headers_complete	= HTTPOnHeadersComplete,
-	.on_body				= HTTPOnBody,
-	.on_message_complete	= HTTPOnMessageComplete
-};
-
-void TCPOnOpen(void *consumerData);
-void TCPOnData(void *consumerData, char *data, short len);
-void TCPOnError(void *consumerData, short err);
-void TCPOnClose(void *consumerData);
-void TCPOnEnd(void *consumerData);
-
-StreamConsumer tcpConsumer = {
-	.on_open = TCPOnOpen,
-	.on_data = TCPOnData,
-	.on_error = TCPOnError,
-	.on_close = TCPOnClose,
-	.on_end = TCPOnEnd,
-};
-
-// Case-insensitive header field name comparison.
-// `name` must be lowercase.
-static Boolean HeaderFieldIs(const char *at, size_t len, const char *name)
+static Boolean ParseDottedQuad(const char *host, ip_addr *addr)
 {
-	size_t i;
-	if (len != strlen(name)) return false;
-	for (i = 0; i < len; i++) {
-		if (tolower((unsigned char)at[i]) != name[i]) return false;
+	unsigned long octets[4];
+	unsigned long value = 0;
+	short octetIndex = 0;
+	const unsigned char *p = (const unsigned char *)host;
+
+	while (*p) {
+		if (*p < '0' || *p > '9') {
+			if (*p != '.' || octetIndex >= 3) return false;
+			octets[octetIndex++] = value;
+			value = 0;
+			p++;
+			continue;
+		}
+		value = (value * 10) + (*p - '0');
+		if (value > 255) return false;
+		p++;
 	}
+
+	if (octetIndex != 3) return false;
+	octets[octetIndex] = value;
+	*addr = ((octets[0] << 24) | (octets[1] << 16)
+			| (octets[2] << 8) | octets[3]);
 	return true;
 }
 
-// Follow an HTTP redirect by closing the current TCP stream
-// and opening a new connection to the redirect target.
-static void HTTPFollowRedirect(struct HTTPURIData *data)
+static short EnsureTCPDriver(void)
 {
-	char *location = data->redirectLocation;
-	struct http_parser_url urlParser;
-	size_t hostLen, pathLen, queryLen;
-	char *newPath = NULL;
-	Stream *newStream;
-
-	data->redirectLocation = NULL;
-	data->shouldRedirect = false;
-
-	// Close current connection while messageComplete is still true,
-	// so TCPOnClose won't fire URIClosed
-	StreamClose(data->tcpStream);
-
-	// Now safe to reset state for new connection
-	data->messageComplete = false;
-	data->redirectCount++;
-	data->isLocationHeader = false;
-	data->err = 0;
-
-	if (strncmp(location, "http://", 7) == 0) {
-		// Absolute URL
-		char *newHost;
-		short newPort;
-
-		if (http_parser_parse_url(location, strlen(location), false,
-				&urlParser)) {
-			goto fail;
-		}
-		if (!(urlParser.field_set & (1 << UF_HOST))) {
-			goto fail;
-		}
-
-		hostLen = urlParser.field_data[UF_HOST].len;
-		newHost = malloc(hostLen + 1);
-		if (!newHost) goto fail;
-		memcpy(newHost, location + urlParser.field_data[UF_HOST].off, hostLen);
-		newHost[hostLen] = '\0';
-
-		if (urlParser.field_set & (1 << UF_PATH)) {
-			pathLen = urlParser.field_data[UF_PATH].len;
-		} else {
-			pathLen = 0;
-		}
-
-		queryLen = 0;
-		if (urlParser.field_set & (1 << UF_QUERY)) {
-			queryLen = urlParser.field_data[UF_QUERY].len;
-		}
-
-		newPath = malloc((pathLen > 0 ? pathLen : 1)
-				+ (queryLen > 0 ? queryLen + 1 : 0) + 1);
-		if (!newPath) { free(newHost); goto fail; }
-
-		if (pathLen == 0) {
-			newPath[0] = '/';
-			pathLen = 1;
-		} else {
-			memcpy(newPath,
-					location + urlParser.field_data[UF_PATH].off, pathLen);
-		}
-
-		if (queryLen > 0) {
-			newPath[pathLen] = '?';
-			memcpy(newPath + pathLen + 1,
-					location + urlParser.field_data[UF_QUERY].off, queryLen);
-			newPath[pathLen + 1 + queryLen] = '\0';
-		} else {
-			newPath[pathLen] = '\0';
-		}
-
-		newPort = urlParser.port ? urlParser.port : 80;
-
-		free(data->host);
-		data->host = newHost;
-		free(data->path);
-		data->path = newPath;
-		data->port = newPort;
-
-	} else if (location[0] == '/') {
-		// Absolute path - keep current host and port
-		size_t locLen = strlen(location);
-		newPath = malloc(locLen + 1);
-		if (!newPath) goto fail;
-		memcpy(newPath, location, locLen + 1);
-		free(data->path);
-		data->path = newPath;
-
-	} else {
-		goto fail;
-	}
-
-	free(location);
-
-	newStream = NewStream();
-	if (!newStream) {
-		URIClosed(data->uri, -1);
-		return;
-	}
-
-	data->tcpStream = newStream;
-	http_parser_init(&data->parser, HTTP_RESPONSE);
-	data->parser.data = data;
-
-	StreamConsume(newStream, &tcpConsumer, data);
-	ProvideTCPActiveStream(newStream, data->host, data->port);
-	StreamOpen(newStream);
-	return;
-
-fail:
-	free(location);
-	URIClosed(data->uri, -1);
+	if (gTCPRefNum) return noErr;
+	return OpenDriver("\p.IPP", &gTCPRefNum);
 }
 
-// create and return the provider data
+static pascal void HTTPResolveProc(struct hostInfo *hostInfo, char *userData)
+{
+	struct HTTPResolveState *state = (struct HTTPResolveState *)userData;
+	(void)hostInfo;
+	state->done = true;
+}
+
+static short ResolveHost(const char *host, ip_addr *addr)
+{
+	struct hostInfo hostInfo;
+	struct HTTPResolveState state;
+	unsigned long deadline;
+	OSErr err;
+
+	if (ParseDottedQuad(host, addr)) {
+		return noErr;
+	}
+
+	if (!gResolverOpen) {
+		err = OpenResolver(NULL);
+		if (err != noErr) return err;
+		gResolverOpen = true;
+	}
+
+	memset(&hostInfo, 0, sizeof(hostInfo));
+	memset(&state, 0, sizeof(state));
+	state.hostInfo = &hostInfo;
+
+	err = StrToAddr((char *)host, &hostInfo, HTTPResolveProc, (Ptr)&state);
+	if (err != noErr && err != cacheFault) {
+		return err;
+	}
+
+	if (err == cacheFault && !state.done) {
+		deadline = TickCount() + 60 * 15;
+		while (!state.done && TickCount() < deadline) {
+			SystemTask();
+		}
+	}
+
+	if (!state.done) {
+		return commandTimeout;
+	}
+	if (hostInfo.rtnCode != noErr && hostInfo.rtnCode != cacheFault) {
+		return (short)hostInfo.rtnCode;
+	}
+	if (hostInfo.addr[0] == 0) {
+		return noNameServer;
+	}
+
+	*addr = hostInfo.addr[0];
+	return noErr;
+}
+
+static long FindHeaderEnd(const char *buf, long len)
+{
+	long i;
+	for (i = 0; i + 3 < len; i++) {
+		if (buf[i] == '\r' && buf[i + 1] == '\n' &&
+				buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+			return i + 4;
+		}
+	}
+	for (i = 0; i + 1 < len; i++) {
+		if (buf[i] == '\n' && buf[i + 1] == '\n') {
+			return i + 2;
+		}
+	}
+	return -1;
+}
+
+static short ParseStatusCode(const char *headerBuf, long headerLen)
+{
+	const char *p = headerBuf;
+	const char *end = headerBuf + headerLen;
+	short status = 0;
+
+	while (p < end && *p != ' ') p++;
+	while (p < end && *p == ' ') p++;
+	while (p < end && *p >= '0' && *p <= '9') {
+		status = (short)(status * 10 + (*p - '0'));
+		p++;
+	}
+	return status;
+}
+
+static void ReleaseTCPStream(StreamPtr tcpStream)
+{
+	TCPiopb pb;
+
+	if (!tcpStream) return;
+
+	memset(&pb, 0, sizeof(pb));
+	pb.csCode = TCPRelease;
+	pb.tcpStream = tcpStream;
+	pb.ioCRefNum = gTCPRefNum;
+	PBControlSync((ParmBlkPtr)&pb);
+}
+
+static short HTTPBlockingFetch(struct HTTPURIData *data)
+{
+	TCPiopb pb;
+	StreamPtr tcpStream = 0;
+	ip_addr remoteAddr;
+	char createBuf[HTTP_CREATE_BUF_SIZE];
+	char recvBuf[HTTP_RECV_BUF_SIZE];
+	char reqMsg[512];
+	wdsEntry wds[2];
+	short reqLen;
+	char *headerBuf = NULL;
+	long headerLen = 0;
+	Boolean headersComplete = false;
+	short statusCode = 0;
+	short err;
+
+	err = ResolveHost(data->host, &remoteAddr);
+	if (err != noErr) {
+		alertf("DNS failed %s: %hd", data->host, err);
+		return err;
+	}
+
+	err = EnsureTCPDriver();
+	if (err != noErr) {
+		alertf("OpenDriver .IPP failed: %hd", err);
+		return err;
+	}
+
+	reqLen = snprintf(reqMsg, sizeof reqMsg,
+			"GET %s HTTP/1.0\r\n"
+			"Host: %s\r\n"
+			"User-Agent: " HTTP_UA "\r\n"
+			"\r\n",
+			data->path, data->host);
+	if (reqLen <= 0 || reqLen >= sizeof reqMsg) {
+		alertf("request truncated");
+		return -1;
+	}
+
+	headerBuf = malloc(HTTP_HEADER_BUF_SIZE);
+	if (!headerBuf) {
+		return memFullErr;
+	}
+
+	memset(&pb, 0, sizeof(pb));
+	pb.csCode = TCPCreate;
+	pb.ioCRefNum = gTCPRefNum;
+	pb.csParam.create.rcvBuff = createBuf;
+	pb.csParam.create.rcvBuffLen = sizeof(createBuf);
+	pb.csParam.create.notifyProc = NULL;
+	pb.csParam.create.userDataPtr = NULL;
+	PBControlSync((ParmBlkPtr)&pb);
+	if (pb.ioResult != noErr) {
+		err = pb.ioResult;
+		goto done;
+	}
+	tcpStream = pb.tcpStream;
+
+	memset(&pb, 0, sizeof(pb));
+	pb.csCode = TCPActiveOpen;
+	pb.ioCRefNum = gTCPRefNum;
+	pb.tcpStream = tcpStream;
+	pb.csParam.open.commandTimeoutValue = 30;
+	pb.csParam.open.remoteHost = remoteAddr;
+	pb.csParam.open.remotePort = data->port;
+	PBControlSync((ParmBlkPtr)&pb);
+	if (pb.ioResult != noErr) {
+		err = pb.ioResult;
+		goto done;
+	}
+
+	memset(&pb, 0, sizeof(pb));
+	pb.csCode = TCPSend;
+	pb.ioCRefNum = gTCPRefNum;
+	pb.tcpStream = tcpStream;
+	pb.csParam.send.pushFlag = true;
+	wds[0].length = reqLen;
+	wds[0].ptr = reqMsg;
+	wds[1].length = 0;
+	wds[1].ptr = NULL;
+	pb.csParam.send.wdsPtr = (Ptr)wds;
+	pb.csParam.send.sendLength = reqLen;
+	PBControlSync((ParmBlkPtr)&pb);
+	if (pb.ioResult != noErr) {
+		err = pb.ioResult;
+		goto done;
+	}
+
+	for (;;) {
+		short ioResult;
+		unsigned short bytesRead;
+		long headerEnd;
+
+		memset(&pb, 0, sizeof(pb));
+		pb.csCode = TCPRcv;
+		pb.ioCRefNum = gTCPRefNum;
+		pb.tcpStream = tcpStream;
+		pb.csParam.receive.commandTimeoutValue = 30;
+		pb.csParam.receive.rcvBuff = recvBuf;
+		pb.csParam.receive.rcvBuffLen = sizeof(recvBuf);
+		PBControlSync((ParmBlkPtr)&pb);
+
+		ioResult = pb.ioResult;
+		bytesRead = pb.csParam.receive.rcvBuffLen;
+
+		if (bytesRead > 0) {
+			if (!headersComplete) {
+				if (headerLen + bytesRead > HTTP_HEADER_BUF_SIZE) {
+					err = memFullErr;
+					goto done;
+				}
+				memcpy(headerBuf + headerLen, recvBuf, bytesRead);
+				headerLen += bytesRead;
+				headerEnd = FindHeaderEnd(headerBuf, headerLen);
+				if (headerEnd >= 0) {
+					headersComplete = true;
+					statusCode = ParseStatusCode(headerBuf, headerEnd);
+					if (statusCode == 0) statusCode = 200;
+					URIMessageBegin(data->uri);
+					URIGotStatus(data->uri, statusCode);
+					URIHeadersComplete(data->uri);
+					if (headerLen > headerEnd) {
+						URIGotData(data->uri, headerBuf + headerEnd,
+								(short)(headerLen - headerEnd));
+					}
+				}
+			} else {
+				URIGotData(data->uri, recvBuf, bytesRead);
+			}
+		}
+
+		if (ioResult == noErr) {
+			continue;
+		}
+		if (ioResult == connectionClosing || ioResult == connectionTerminated) {
+			err = noErr;
+			break;
+		}
+		err = ioResult;
+		break;
+	}
+
+done:
+	if (tcpStream) {
+		ReleaseTCPStream(tcpStream);
+	}
+	if (headerBuf) free(headerBuf);
+	return err;
+}
+
 void *HTTPProviderInit(URI *uri, char *uriStr)
 {
 	struct HTTPURIData *data;
-	Stream *tcpStream;
 	struct http_parser_url urlParser;
-	size_t hostLen, pathLen;
+	size_t hostLen, pathLen, queryLen;
 
 	if (http_parser_parse_url(uriStr, strlen(uriStr), false, &urlParser)) {
 		alertf("Error parsing URL %s", uriStr);
 		return NULL;
 	}
-
 	if (!(urlParser.field_set & (1 << UF_HOST))) {
 		alertf("URL missing host");
 		return NULL;
 	}
+
 	hostLen = urlParser.field_data[UF_HOST].len;
+	pathLen = (urlParser.field_set & (1 << UF_PATH))
+			? urlParser.field_data[UF_PATH].len : 0;
+	queryLen = (urlParser.field_set & (1 << UF_QUERY))
+			? urlParser.field_data[UF_QUERY].len : 0;
 
-	if (!(urlParser.field_set & (1 << UF_PATH))) {
-		pathLen = 0;
-	} else {
-		pathLen = urlParser.field_data[UF_PATH].len;
-	}
-
-	data = malloc(sizeof(struct HTTPURIData));
-	if (!data) {
-		return NULL;
-	}
+	data = calloc(1, sizeof(*data));
+	if (!data) return NULL;
 
 	data->host = malloc(hostLen + 1);
-	/* +2 to allow for "/" default path */
-	data->path = malloc((pathLen > 0 ? pathLen : 1) + 1);
+	data->path = malloc((pathLen > 0 ? pathLen : 1)
+			+ (queryLen > 0 ? queryLen + 1 : 0) + 1);
 	if (!data->host || !data->path) {
 		if (data->host) free(data->host);
 		if (data->path) free(data->path);
@@ -245,50 +361,35 @@ void *HTTPProviderInit(URI *uri, char *uriStr)
 		return NULL;
 	}
 
-	data->port = urlParser.port ? urlParser.port : 80;
 	memcpy(data->host, uriStr + urlParser.field_data[UF_HOST].off, hostLen);
 	data->host[hostLen] = '\0';
 
 	if (pathLen == 0) {
 		data->path[0] = '/';
-		data->path[1] = '\0';
+		pathLen = 1;
 	} else {
 		memcpy(data->path, uriStr + urlParser.field_data[UF_PATH].off, pathLen);
+	}
+	if (queryLen > 0) {
+		data->path[pathLen] = '?';
+		memcpy(data->path + pathLen + 1,
+				uriStr + urlParser.field_data[UF_QUERY].off, queryLen);
+		data->path[pathLen + 1 + queryLen] = '\0';
+	} else {
 		data->path[pathLen] = '\0';
 	}
 
-	tcpStream = NewStream();
-	if (!tcpStream) {
-		free(data->host);
-		free(data->path);
-		free(data);
-		return NULL;
-	}
-
 	data->uri = uri;
-	data->tcpStream = tcpStream;
-	data->err = 0;
-	data->messageComplete = false;
-	data->sawData = false;
-	data->shouldRedirect = false;
-	data->isLocationHeader = false;
-	data->redirectCount = 0;
-	data->redirectLocation = NULL;
-	http_parser_init(&data->parser, HTTP_RESPONSE);
-	data->parser.data = data;
-
-	StreamConsume(tcpStream, &tcpConsumer, data);
-	ProvideTCPActiveStream(tcpStream, data->host, data->port);
+	data->port = urlParser.port ? urlParser.port : 80;
 	return data;
 }
 
 void HTTPProviderClose(URI *uri, void *providerData)
 {
 	struct HTTPURIData *data = (struct HTTPURIData *)providerData;
-	StreamClose(data->tcpStream);
+	(void)uri;
 	free(data->host);
 	free(data->path);
-	if (data->redirectLocation) free(data->redirectLocation);
 	free(data);
 }
 
@@ -296,172 +397,15 @@ void HTTPProviderRequest(URI *uri, void *providerData, HTTPMethod *method,
 		Stream *postData)
 {
 	struct HTTPURIData *data = (struct HTTPURIData *)providerData;
+	short err;
 
-	// ignore POST data
 	(void)postData;
 
 	if (method->type != httpGET) {
-		// only GET is supported
 		URIClosed(uri, uriBadMethodErr);
 		return;
 	}
 
-	alertf("HTTP GET %s:%hd%s", data->host, data->port, data->path);
-	StreamOpen(data->tcpStream);
-}
-
-// TCP connection opened
-void TCPOnOpen(void *consumerData)
-{
-	struct HTTPURIData *hData = (struct HTTPURIData *)consumerData;
-	char reqMsg[256];
-	short reqLen;
-
-	// Build the HTTP request
-	reqLen = snprintf(reqMsg, sizeof reqMsg,
-			"GET %s HTTP/1.1\r\n"
-			"User-Agent: " HTTP_UA "\r\n"
-			"Host: %s\r\n"
-			"Connection: Close\r\n"
-			"\r\n",
-			hData->path, hData->host);
-	if (reqLen >= sizeof reqMsg) {
-		// request was truncated
-		alertf("request truncated");
-		StreamClose(hData->tcpStream);
-		URIClosed(hData->uri, -2);
-		return;
-	}
-
-	//alertf("sending http request (%hu): %s", reqLen, reqMsg);
-
-	// Send the request
-	alertf("TCP opened; sending request");
-	StreamWrite(hData->tcpStream, reqMsg, reqLen);
-}
-
-void TCPOnData(void *consumerData, char *data, short len)
-{
-	struct HTTPURIData *hData = (struct HTTPURIData *)consumerData;
-	size_t nparsed;
-
-	if (!hData->sawData) {
-		hData->sawData = true;
-		alertf("HTTP received %hd bytes", len);
-	}
-
-	nparsed = http_parser_execute(&hData->parser, &parserSettings, data, len);
-
-	// After a redirect, the parser was re-initialized for the new connection.
-	// Don't check errors against the old parse state.
-	if (hData->messageComplete) return;
-
-	if (nparsed != len && hData->parser.http_errno != HPE_OK) {
-		StreamClose(hData->tcpStream);
-		URIClosed(hData->uri, -1);
-	}
-}
-
-void TCPOnError(void *consumerData, short err)
-{
-	struct HTTPURIData *data = (struct HTTPURIData *)consumerData;
-	data->err = err;
-	if (err == tcpMissingDriverErr) {
-		alertf("Missing MacTCP driver");
-		return;
-	}
-	alertf("tcp stream error: %ld", err);
-}
-
-void TCPOnClose(void *consumerData)
-{
-	struct HTTPURIData *data = (struct HTTPURIData *)consumerData;
-	http_parser_execute(&data->parser, &parserSettings, "", 0);
-	if (!data->messageComplete) {
-		URIClosed(data->uri, data->err);
-	}
-}
-
-void TCPOnEnd(void *consumerData)
-{
-}
-
-// HTTP parser callbacks
-//
-// Consumer notifications (URIMessageBegin, URIGotStatus, URIHeadersComplete)
-// are deferred until HTTPOnHeadersComplete so that redirect responses
-// are transparent to the consumer.
-
-int HTTPOnMessageBegin(http_parser *parser)
-{
-	return 0;
-}
-
-int HTTPOnStatus(http_parser *parser, const char *at, size_t len)
-{
-	return 0;
-}
-
-int HTTPOnHeaderField(http_parser *parser, const char *at, size_t len)
-{
-	struct HTTPURIData *hData = (struct HTTPURIData *)parser->data;
-	hData->isLocationHeader = HeaderFieldIs(at, len, "location");
-	return 0;
-}
-
-int HTTPOnHeaderValue(http_parser *parser, const char *at, size_t len)
-{
-	struct HTTPURIData *hData = (struct HTTPURIData *)parser->data;
-	if (hData->isLocationHeader) {
-		if (hData->redirectLocation) free(hData->redirectLocation);
-		hData->redirectLocation = malloc(len + 1);
-		if (hData->redirectLocation) {
-			memcpy(hData->redirectLocation, at, len);
-			hData->redirectLocation[len] = '\0';
-		}
-	}
-	return 0;
-}
-
-int HTTPOnHeadersComplete(http_parser *parser)
-{
-	struct HTTPURIData *hData = (struct HTTPURIData *)parser->data;
-	short status = parser->status_code;
-
-	// Check for redirect
-	if ((status == 301 || status == 302 || status == 303 ||
-	     status == 307 || status == 308) &&
-	    hData->redirectLocation &&
-	    hData->redirectCount < MAX_REDIRECTS) {
-		hData->shouldRedirect = true;
-		return 0;
-	}
-
-	// Not a redirect - notify consumer
-	URIMessageBegin(hData->uri);
-	URIGotStatus(hData->uri, status);
-	URIHeadersComplete(hData->uri);
-	return 0;
-}
-
-int HTTPOnBody(http_parser *parser, const char *at, size_t len)
-{
-	struct HTTPURIData *hData = (struct HTTPURIData *)parser->data;
-	if (hData->shouldRedirect) return 0;
-	URIGotData(hData->uri, (char *)at, len);
-	return 0;
-}
-
-int HTTPOnMessageComplete(http_parser *parser)
-{
-	struct HTTPURIData *hData = (struct HTTPURIData *)parser->data;
-	hData->messageComplete = true;
-
-	if (hData->shouldRedirect) {
-		HTTPFollowRedirect(hData);
-		return 0;
-	}
-
-	URIClosed(hData->uri, hData->err);
-	return 0;
+	err = HTTPBlockingFetch(data);
+	URIClosed(uri, err);
 }

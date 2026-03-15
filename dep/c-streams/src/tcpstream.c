@@ -159,9 +159,11 @@ void TCPStreamResolveCompleted(TCPData *tcpData)
 {
 	char *s;
 	struct hostInfo *resolveInfo = tcpData->remoteHost.resolveInfo;
+	long rtnCode = resolveInfo->rtnCode;
+	ip_addr resolvedAddr = resolveInfo->addr[0];
 	tcpData->resolveState = resolveFinished;
 
-	switch (resolveInfo->rtnCode) {
+	switch (rtnCode) {
 		case noErr:
 			s = NULL;
 			break;
@@ -192,12 +194,32 @@ void TCPStreamResolveCompleted(TCPData *tcpData)
 		default:
 			s = "Unknown";
 	}
-	if (s) alertf("Resolver: %s: %.80s", s, tcpData->remoteHost.name);
-	else alertf("DNS resolved %.80s -> %s",
-			tcpData->remoteHost.name, sprint_ip_addr(resolveInfo->addr[0]));
+
+	if (rtnCode == noErr) {
+		if (resolvedAddr == 0) {
+			alertf("DNS resolved %.80s but got no address",
+					tcpData->remoteHost.name);
+			tcpData->remoteHost.resolveInfo = NULL;
+			free(resolveInfo);
+			StreamErrored(tcpData->stream, tcpConnectErr);
+			return;
+		}
+		alertf("DNS resolved %.80s -> %s",
+				tcpData->remoteHost.name, sprint_ip_addr(resolvedAddr));
+	} else if (resolvedAddr != 0) {
+		alertf("DNS rtnCode %ld for %.80s; using %s",
+				rtnCode, tcpData->remoteHost.name, sprint_ip_addr(resolvedAddr));
+	} else {
+		alertf("Resolver: %s (%ld): %.80s", s, rtnCode,
+				tcpData->remoteHost.name);
+		tcpData->remoteHost.resolveInfo = NULL;
+		free(resolveInfo);
+		StreamErrored(tcpData->stream, tcpConnectErr);
+		return;
+	}
 
 	// proceed with opening the stream
-	tcpData->remoteHost.addr = resolveInfo->addr[0];
+	tcpData->remoteHost.addr = resolvedAddr;
 	tcpData->remoteHost.resolveInfo = NULL;
 	free(resolveInfo);
 	TCPStreamOpen(tcpData->stream, tcpData);
@@ -366,6 +388,8 @@ void TCPStreamAbort(Stream *stream, void *providerData)
 void TCPStreamWrite(Stream *s, void *pData, char *data, unsigned short len)
 {
 	TCPData *tcpData = (TCPData *)pData;
+	OSErr err;
+	TCPSendPB *sendPb;
 	if (!tcpData) {
 		StreamErrored(s, tcpMissingStreamErr);
 		return;
@@ -392,19 +416,64 @@ void TCPStreamWrite(Stream *s, void *pData, char *data, unsigned short len)
 	memcpy(data_copy, data, len);
 	wds->length = len;
 	wds->ptr = data_copy;
-	pb->csParam.send.wdsPtr = (Ptr)wds;
-	PBControlAsync((ParmBlkPtr)pb);
+
+	sendPb = &pb->csParam.send;
+	sendPb->ulpTimeoutValue = 0;
+	sendPb->ulpTimeoutAction = 0;
+	sendPb->validityFlags = 0;
+	sendPb->pushFlag = true;
+	sendPb->urgentFlag = false;
+	sendPb->filler = 0;
+	sendPb->wdsPtr = (Ptr)wds;
+	sendPb->sendLength = len;
+	sendPb->userDataPtr = NULL;
+	pb->ioCompletion = NULL;
+
+	err = PBControlSync((ParmBlkPtr)pb);
+
+	free(wds->ptr);
+	free(wds);
+
+	if (err != noErr) {
+		StreamErrored(s, err);
+		free(pb);
+		return;
+	}
+
+	switch (pb->ioResult) {
+		case noErr:
+			break;
+		case connectionTerminated:
+			StreamErrored(s, tcpTerminatedErr);
+			break;
+		case invalidStreamPtr:
+		case connectionDoesntExist:
+		case connectionClosing:
+			StreamErrored(s, tcpMissingStreamErr);
+			break;
+		case invalidLength:
+		case invalidWDS:
+		default:
+			StreamErrored(s, tcpInternalErr);
+			break;
+	}
+	free(pb);
 }
 
 // get data
 void TCPStreamReceive(TCPData *tcpData, MyTCPiopb *pb)
 {
-	pb->pb.csCode = TCPNoCopyRcv;
+	pb->pb.csCode = TCPRcv;
 	TCPReceivePB *receivePb = &pb->pb.csParam.receive;
 	receivePb->secondTimeStamp = 0;
 	receivePb->commandTimeoutValue = 0;
-	receivePb->rdsPtr = (Ptr)tcpData->rds;
-	receivePb->rdsLength = ARRAYSIZE(tcpData->rds);
+	receivePb->markFlag = false;
+	receivePb->urgentFlag = false;
+	receivePb->filler = 0;
+	receivePb->rcvBuff = tcpData->recvBuf;
+	receivePb->rcvBuffLen = sizeof(tcpData->recvBuf);
+	receivePb->rdsPtr = NULL;
+	receivePb->rdsLength = 0;
 	PBControlAsync((ParmBlkPtr)pb);
 }
 
@@ -551,21 +620,13 @@ void TCPStreamCompleted(Stream *stream, MyTCPiopb *pb)
 			free(pb);
 			break;
 		}
-		case TCPNoCopyRcv: {
+		case TCPRcv: {
 			short rcvResult = pb->pb.ioResult;
+			TCPReceivePB *receivePb = &pb->pb.csParam.receive;
 
-			// Process the received data
-			rdsEntry *rds = tcpData->rds;
-			for (; rds->length; rds++) {
-				StreamRead(stream, rds->ptr, rds->length);
-			}
-
-			// return rds bufs
-			pb->pb.csCode = TCPRcvBfrReturn;
-			// reuse pb. rds pointer is already set
-			OSErr oe = PBControlSync((ParmBlkPtr)pb);
-			if (oe != noErr) {
-				StreamErrored(stream, tcpInternalErr);
+			if (receivePb->rcvBuffLen > 0) {
+				StreamRead(stream, (char *)receivePb->rcvBuff,
+						receivePb->rcvBuffLen);
 			}
 
 			switch (rcvResult) {
@@ -639,9 +700,8 @@ pascal void TCPNotifyProc(
 	}
 }
 
-// Asynchronous IO completion function for PBControl calls
-// May be executed in interrupt.
-#pragma parameter TCPIOComplete(__A0)
+// Asynchronous IO completion function for PBControl calls.
+// MacTCP uses a C stack-based completion routine here.
 void TCPIOComplete(TCPiopb *thePB)
 {
 	MyTCPiopb *pb = (MyTCPiopb *)thePB;

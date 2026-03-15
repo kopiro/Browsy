@@ -46,6 +46,7 @@ ifndef V
 	QUIET_APPL = @echo ' APPL ' $@;
 	QUIET_RSRC = @echo ' RSRC ' $@;
 	QUIET_DSK  = @echo ' DSK  ' $@;
+	QUIET_FLPY = @echo ' FLOP ' $<;
 	QUIET_RUN  = @echo ' RUN  ' $<;
 endif
 
@@ -217,4 +218,4 @@ clean:
 
 FORCE:
 
-.PHONY: all build-local clean deps docker-build docker-dsk docker-image system7-img wc run run-basilisk run-sys6 FORCE
+.PHONY: all build-local clean deps docker-build docker-dsk docker-image system7-img wc run run-basilisk run-sys6 write-floppy FORCE

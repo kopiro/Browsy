@@ -57,7 +57,20 @@ make docker-dsk
 
 Produces `Browsy.dsk` — an 800 KB HFS floppy image containing `Browsy.bin`.
 
-The disk image can be written to a real floppy (1.44 MB HD or 800 KB DD) with:
+On macOS, the repo can auto-detect a removable floppy drive in the 1.5 MB range
+and write the image with `diskutil`:
+
+```sh
+make write-floppy
+```
+
+Override the image path if needed:
+
+```sh
+make write-floppy FLOPPY_IMAGE=emulator/apps/MacTCP_Ping_2.0.2.dsk
+```
+
+Manual `dd` still works if you prefer:
 
 Find the correct disk node with `diskutil list` before running `dd`. Replace
 `diskN` with the raw disk device (e.g. `disk3`, not `disk3s1`). **Eject the

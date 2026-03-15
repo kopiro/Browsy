@@ -11,17 +11,17 @@
 
 struct hostInfo {
     /*
-     * Some modern 68k toolchains need this leading pad for MacTCP's
-     * StrToAddr/AddrToName results to land on the expected offsets.
+     * MacTCP's DNR result layout expects a 2-byte leading pad before the
+     * 2-byte rtnCode. Without this, result fields land at the wrong offsets.
      */
-    long    _pad;
-    long    rtnCode;
+    short   _pad;
+    OSErr   rtnCode;
     char    cname[255];
     ip_addr addr[NUM_ALT_ADDRS];
 };
 
 struct returnRec {
-    long    rtnCode;
+    OSErr   rtnCode;
     char    cname[255];
     /* additional fields for HINFO/MX records */
     short   preference;
