@@ -2,6 +2,7 @@
 *.o
 *.i
 *.d
+*.a
 rsrc-args
 rsrc/*/*.dat
 lib
