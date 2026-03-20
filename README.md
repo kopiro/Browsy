@@ -57,28 +57,40 @@ make docker-dsk
 
 Produces `Browsy.dsk` — an 800 KB HFS floppy image containing `Browsy.bin`.
 
-On macOS, the repo can auto-detect a removable floppy drive in the 1.5 MB range
-and write the image with `diskutil`:
+On macOS, write the repo image with:
 
 ```sh
-make write-floppy
+make floppy
 ```
 
-Override the image path if needed:
+This always writes `Browsy.dsk` from the repo root.
+
+If auto-detection does not find exactly one safe floppy, pass the disk manually:
 
 ```sh
-make write-floppy FLOPPY_IMAGE=emulator/apps/MacTCP_Ping_2.0.2.dsk
+make floppy FLOPPY_DISK=disk17
 ```
 
-Manual `dd` still works if you prefer:
+The script will only auto-select a disk if it finds exactly one whole disk that
+is physical, removable, ejectable, writable, and exactly `1474560` bytes. If no
+disk qualifies, or more than one does, pass the target manually:
+
+```sh
+scripts/write-floppy.sh disk17
+```
+
+Manual `diskN` still has to satisfy the same safety checks before the script
+will run `dd`.
+
+Manual `dd` still works if you prefer, but it is easier to make a mistake:
 
 Find the correct disk node with `diskutil list` before running `dd`. Replace
 `diskN` with the raw disk device (e.g. `disk3`, not `disk3s1`). **Eject the
 disk first** with `diskutil unmountDisk /dev/diskN`.
 
 ```sh
-# macOS - if disk8 is your floppy
-sudo diskutil unmountDisk disk8 && sudo dd if=Browsy.dsk of=/dev/disk8 bs=512 && sudo diskutil unmountDisk disk8
+# macOS - if disk17 is your floppy
+sudo diskutil unmountDisk disk17 && sudo dd if=Browsy.dsk of=/dev/disk17 bs=512 && sudo diskutil unmountDisk disk17
 ```
 
 On Linux:

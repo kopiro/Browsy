@@ -1,4 +1,5 @@
 BIN     = Browsy
+FLOPPY_DISK ?=
 TOOLCHAIN ?= /Retro68-build/toolchain
 ARCH    ?= m68k-apple-macos
 CC      = $(TOOLCHAIN)/bin/$(ARCH)-gcc
@@ -50,7 +51,7 @@ ifndef V
 	QUIET_APPL = @echo ' APPL ' $@;
 	QUIET_RSRC = @echo ' RSRC ' $@;
 	QUIET_DSK  = @echo ' DSK  ' $@;
-	QUIET_FLPY = @echo ' FLOP ' $<;
+	QUIET_FLPY = @echo ' FLOP ' $@;
 	QUIET_RUN  = @echo ' RUN  ' $<;
 endif
 
@@ -213,6 +214,9 @@ system7-img:
 
 run-basilisk: run-sys7
 
+floppy: scripts/write-floppy.sh
+	$(QUIET_FLPY)./scripts/write-floppy.sh $(FLOPPY_DISK)
+
 run-sys7:
 	"$(CURDIR)/$(BASILISK_BIN)" --config "$(CURDIR)/$(BASILISK_PREFS_SYS7)"
 
@@ -232,4 +236,4 @@ clean:
 
 FORCE:
 
-.PHONY: all build-local clean deps docker-build docker-dsk docker-image system7-img test wc run run-basilisk run-sys6 write-floppy FORCE
+.PHONY: all build-local clean deps docker-build docker-dsk docker-image system7-img test wc run run-basilisk run-sys6 floppy FORCE
