@@ -8,3 +8,4 @@ rsrc/*/*.dat
 lib
 linkmap.txt
 rsrc-rez
+tests/build

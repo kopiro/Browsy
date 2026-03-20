@@ -50,6 +50,7 @@ void PopupNavMenu(PageWindow *pWin, Rect *buttonRect);
 void DebugSave(long bytes, Ptr buffer);
 void LoadingStarted(PageWindow *pWin);
 void LoadingEnded(PageWindow *pWin);
+static Boolean HomePageFileExists(void);
 
 pascal void ScrollAction(ControlHandle control, short part);
 
@@ -991,17 +992,31 @@ void PageWindowSaveAs(PageWindow *pWin) {
 }
 
 void PageWindowNavigateHome(PageWindow *pWin) {
-	//char *home = "http://192.168.1.128/stuff/election/2011candidates.html";
-	//char *home = "file:///Macintosh HD/DOMDocuments/Browsy/page.html";
-	//char *home = "about:Browsy";
-	char *home = "about:stuff";
-	//char *home = "file:///Macintosh HD/asdf.txt";
-	//char *home = "file:///Untitled/Browsy";
-	//char *home = "file:///Launcher/page.html";
+	char *home;
+
+	if (HomePageFileExists()) {
+		home = "file:///Browsy/page.html";
+	} else {
+		home = "about:Browsy";
+	}
 
 	//"http://www.lehnerstudios.com/newsite/";
 	// GetPrefStr(prefHomePage, home);
 	PageWindowNavigate(pWin, home);
+}
+
+static Boolean HomePageFileExists(void)
+{
+	Str255 fileName = "\020Browsy:page.html";
+	short refNum;
+	OSErr err;
+
+	err = FSOpen(fileName, 0, &refNum);
+	if (err != noErr) {
+		return false;
+	}
+	FSClose(refNum);
+	return true;
 }
 
 void PageWindowNavigateHistory(PageWindow *pWin, short amount) {

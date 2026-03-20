@@ -38,6 +38,10 @@ DOCKER_TOOLCHAIN = /Retro68-build/toolchain
 DOCKER_ARCH = m68k-apple-macos
 DOCKER      ?= docker
 IN_DOCKER_BUILD ?= 0
+HOST_CC ?= cc
+TEST_DIR = tests
+TEST_BUILD_DIR = $(TEST_DIR)/build
+TEST_BIN = $(TEST_BUILD_DIR)/http_response_test
 
 ifndef V
 	QUIET_CC   = @echo ' CC   ' $<;
@@ -151,6 +155,12 @@ $(DEP_DIR)/c-streams/libcstreams.a: $(DEP_DIR)/c-streams
 $(DEP_DIR) $(LIB_DIR):
 	mkdir -p $@
 
+$(TEST_BUILD_DIR):
+	mkdir -p $@
+
+$(TEST_BIN): $(TEST_DIR)/http_response_test.c src/http_response.c src/http_response.h | $(TEST_BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Isrc -o $@ $(TEST_DIR)/http_response_test.c src/http_response.c
+
 # Docker build
 
 docker-image:
@@ -170,6 +180,9 @@ docker-dsk:
 		-v $(CURDIR):/root/build -w /root/build \
 		$(DOCKER_IMAGE) \
 		make $(BIN).dsk IN_DOCKER_BUILD=1 TOOLCHAIN=$(DOCKER_TOOLCHAIN) ARCH=$(DOCKER_ARCH)
+
+test: docker-build $(TEST_BIN)
+	$(TEST_BIN)
 
 # Running
 
@@ -214,8 +227,9 @@ wc:
 clean:
 	rm -f $(BIN) $(BIN).dsk $(BIN).bin $(BIN).gdb \
 		$(OBJ) $(CDEP) rsrc/*/*.dat rsrc-rez linkmap.txt $(LIBS)
+	rm -rf $(TEST_BUILD_DIR)
 	rm -rf .rsrc .finf
 
 FORCE:
 
-.PHONY: all build-local clean deps docker-build docker-dsk docker-image system7-img wc run run-basilisk run-sys6 write-floppy FORCE
+.PHONY: all build-local clean deps docker-build docker-dsk docker-image system7-img test wc run run-basilisk run-sys6 write-floppy FORCE

@@ -14,7 +14,6 @@
 #include <string.h>
 #include "MacTCP.h"
 #include "AddressXlation.h"
-#include "utils.h"
 
 /* Folders.h redirect -- FindFolder and friends are in Multiverse.h */
 
@@ -31,11 +30,6 @@ enum {
     kResolverOSTrap = 0,
     kResolverToolTrap = 1
 };
-
-static void ResolverStageAlert(char *stage, OSErr err)
-{
-    alertf("DNR %s %hd", stage, err);
-}
 
 static short NumToolboxTraps(void)
 {
@@ -166,39 +160,27 @@ static short OpenOurRF(void)
     long dirID;
 
     /* On System 6, the System Folder path is the safest first probe. */
-    ResolverStageAlert("rf-sys-ztcp", noErr);
     GetSystemFolder(&vRefNum, &dirID);
-    ResolverStageAlert("rf-sysdir", noErr);
-    ResolverStageAlert("rf-sys-name", noErr);
     refnum = TryOpenDNRPByName(vRefNum, dirID, gMacTCPFileName);
     if (refnum != -1) return refnum;
-    ResolverStageAlert("rf-sys-scan", noErr);
     refnum = SearchFolderForDNRP('cdev', 'ztcp', vRefNum, dirID);
     if (refnum != -1) return refnum;
 
-    ResolverStageAlert("rf-sys-mtcp", noErr);
     refnum = TryOpenDNRPByName(vRefNum, dirID, gMacTCPFileName);
     if (refnum != -1) return refnum;
-    ResolverStageAlert("rf-sys-scan2", noErr);
     refnum = SearchFolderForDNRP('cdev', 'mtcp', vRefNum, dirID);
     if (refnum != -1) return refnum;
 
     /* Keep the older Control Panels fallback for newer layouts. */
-    ResolverStageAlert("rf-cpanel-ztcp", noErr);
     GetCPanelFolder(&vRefNum, &dirID);
-    ResolverStageAlert("rf-cpdir", noErr);
-    ResolverStageAlert("rf-cp-name", noErr);
     refnum = TryOpenDNRPByName(vRefNum, dirID, gMacTCPFileName);
     if (refnum != -1) return refnum;
-    ResolverStageAlert("rf-cp-scan", noErr);
     refnum = SearchFolderForDNRP('cdev', 'ztcp', vRefNum, dirID);
     if (refnum != -1) return refnum;
 
-    ResolverStageAlert("rf-cpanel-mtcp", noErr);
     GetCPanelFolder(&vRefNum, &dirID);
     refnum = TryOpenDNRPByName(vRefNum, dirID, gMacTCPFileName);
     if (refnum != -1) return refnum;
-    ResolverStageAlert("rf-cp-scan2", noErr);
     refnum = SearchFolderForDNRP('cdev', 'mtcp', vRefNum, dirID);
     if (refnum != -1) return refnum;
 
@@ -213,22 +195,15 @@ OSErr OpenResolver(char *fileName)
     if (gDNRCodePtr != nil)
         return noErr;
 
-    ResolverStageAlert("load-direct", noErr);
     gDNRCodeHndl = GetIndResource('dnrp', 1);
     if (gDNRCodeHndl != nil)
         goto got_resource;
 
-    ResolverStageAlert("open-rf", noErr);
     refnum = OpenOurRF();
-    if (refnum == -1)
-        ResolverStageAlert("open-rf", fnfErr);
 
-    ResolverStageAlert("load-rsrc", noErr);
     gDNRCodeHndl = GetIndResource('dnrp', 1);
-    if (gDNRCodeHndl == nil) {
-        ResolverStageAlert("load-rsrc", ResError());
+    if (gDNRCodeHndl == nil)
         return ResError();
-    }
 
 got_resource:
     ReserveMem(16000L);
@@ -236,15 +211,12 @@ got_resource:
     if (refnum != -1)
         CloseResFile(refnum);
 
-    ResolverStageAlert("lock-rsrc", noErr);
     MoveHHi(gDNRCodeHndl);
     HLock(gDNRCodeHndl);
     gDNRCodePtr = (ProcPtr)*gDNRCodeHndl;
 
-    ResolverStageAlert("open-call", noErr);
     rc = CallOpenResolverProc(gDNRCodePtr, OPENRESOLVER, fileName);
     if (rc != noErr) {
-        ResolverStageAlert("open-call", rc);
         HUnlock(gDNRCodeHndl);
         DisposeHandle(gDNRCodeHndl);
         gDNRCodePtr = nil;
@@ -268,17 +240,11 @@ OSErr CloseResolver(void)
 OSErr StrToAddr(char *hostName, struct hostInfo *rtnStruct,
                 ResultUPP resultproc, Ptr userDataPtr)
 {
-    OSErr rc;
-
     if (gDNRCodePtr == nil)
         return notOpenErr;
 
-    ResolverStageAlert("strtoaddr", noErr);
-    rc = CallStrToAddrProc(gDNRCodePtr, STRTOADDR, hostName,
-                           rtnStruct, resultproc, userDataPtr);
-    if (rc != noErr && rc != cacheFault)
-        ResolverStageAlert("strtoaddr", rc);
-    return rc;
+    return CallStrToAddrProc(gDNRCodePtr, STRTOADDR, hostName,
+                             rtnStruct, resultproc, userDataPtr);
 }
 
 OSErr AddrToStr(unsigned long addr, char *addrStr)

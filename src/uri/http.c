@@ -12,6 +12,7 @@
 #include "utils.h"
 #include "uri.h"
 #include "http_parser.h"
+#include "http_response.h"
 #include "uri/http.h"
 
 #define HTTP_UA "Browsy/" BROWSY_VERSION " (Macintosh; N; 68K)"
@@ -132,38 +133,6 @@ static short ResolveHost(const char *host, ip_addr *addr)
 	return noErr;
 }
 
-static long FindHeaderEnd(const char *buf, long len)
-{
-	long i;
-	for (i = 0; i + 3 < len; i++) {
-		if (buf[i] == '\r' && buf[i + 1] == '\n' &&
-				buf[i + 2] == '\r' && buf[i + 3] == '\n') {
-			return i + 4;
-		}
-	}
-	for (i = 0; i + 1 < len; i++) {
-		if (buf[i] == '\n' && buf[i + 1] == '\n') {
-			return i + 2;
-		}
-	}
-	return -1;
-}
-
-static short ParseStatusCode(const char *headerBuf, long headerLen)
-{
-	const char *p = headerBuf;
-	const char *end = headerBuf + headerLen;
-	short status = 0;
-
-	while (p < end && *p != ' ') p++;
-	while (p < end && *p == ' ') p++;
-	while (p < end && *p >= '0' && *p <= '9') {
-		status = (short)(status * 10 + (*p - '0'));
-		p++;
-	}
-	return status;
-}
-
 static void ReleaseTCPStream(StreamPtr tcpStream)
 {
 	TCPiopb pb;
@@ -189,6 +158,8 @@ static short HTTPBlockingFetch(struct HTTPURIData *data)
 	short reqLen;
 	char *headerBuf = NULL;
 	long headerLen = 0;
+	long contentLength = -1;
+	long bodyBytesRead = 0;
 	Boolean headersComplete = false;
 	short statusCode = 0;
 	short err;
@@ -269,6 +240,7 @@ static short HTTPBlockingFetch(struct HTTPURIData *data)
 		short ioResult;
 		unsigned short bytesRead;
 		long headerEnd;
+		Boolean consumeData = true;
 
 		memset(&pb, 0, sizeof(pb));
 		pb.csCode = TCPRcv;
@@ -281,8 +253,17 @@ static short HTTPBlockingFetch(struct HTTPURIData *data)
 
 		ioResult = pb.ioResult;
 		bytesRead = pb.csParam.receive.rcvBuffLen;
+		bytesRead = HTTPClipBodyBytes(contentLength, bodyBytesRead, bytesRead);
+		if (headersComplete &&
+				(ioResult == connectionClosing ||
+				 ioResult == connectionTerminated) &&
+				bytesRead > 0 &&
+				(HTTPLooksLikeResponse(recvBuf, bytesRead) ||
+				 HTTPFindHeaderEnd(recvBuf, bytesRead) >= 0)) {
+			consumeData = false;
+		}
 
-		if (bytesRead > 0) {
+		if (consumeData && bytesRead > 0) {
 			if (!headersComplete) {
 				if (headerLen + bytesRead > HTTP_HEADER_BUF_SIZE) {
 					err = memFullErr;
@@ -290,22 +271,38 @@ static short HTTPBlockingFetch(struct HTTPURIData *data)
 				}
 				memcpy(headerBuf + headerLen, recvBuf, bytesRead);
 				headerLen += bytesRead;
-				headerEnd = FindHeaderEnd(headerBuf, headerLen);
+				headerEnd = HTTPFindHeaderEnd(headerBuf, headerLen);
 				if (headerEnd >= 0) {
 					headersComplete = true;
-					statusCode = ParseStatusCode(headerBuf, headerEnd);
+					contentLength = HTTPParseContentLength(headerBuf, headerEnd);
+					statusCode = HTTPParseStatusCode(headerBuf, headerEnd);
 					if (statusCode == 0) statusCode = 200;
 					URIMessageBegin(data->uri);
 					URIGotStatus(data->uri, statusCode);
 					URIHeadersComplete(data->uri);
 					if (headerLen > headerEnd) {
-						URIGotData(data->uri, headerBuf + headerEnd,
-								(short)(headerLen - headerEnd));
+						short initialBodyLen = (short)(headerLen - headerEnd);
+						if (contentLength >= 0 &&
+								initialBodyLen > contentLength - bodyBytesRead) {
+							initialBodyLen = (short)(contentLength - bodyBytesRead);
+						}
+						if (initialBodyLen > 0) {
+							URIGotData(data->uri, headerBuf + headerEnd,
+									initialBodyLen);
+							bodyBytesRead += initialBodyLen;
+						}
 					}
 				}
 			} else {
 				URIGotData(data->uri, recvBuf, bytesRead);
+				bodyBytesRead += bytesRead;
 			}
+		}
+
+		if (headersComplete && contentLength >= 0 &&
+				bodyBytesRead >= contentLength) {
+			err = noErr;
+			break;
 		}
 
 		if (ioResult == noErr) {
