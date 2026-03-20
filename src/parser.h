@@ -19,6 +19,12 @@ typedef struct {
 	Style face;
 } HtmlTextStyle;
 
+typedef struct {
+	long startOffset;
+	long endOffset;
+	char *href;
+} HtmlLinkRange;
+
 typedef struct HtmlParser {
 	TEHandle outputTE;
 	WindowPtr window;
@@ -26,7 +32,7 @@ typedef struct HtmlParser {
 	HtmlParserState state;
 
 	/* Tag accumulation (survives chunk boundaries) */
-	char tagBuf[32];
+	char tagBuf[256];
 	short tagBufLen;
 	Boolean isClosingTag;
 
@@ -43,14 +49,16 @@ typedef struct HtmlParser {
 	short entityBufLen;
 
 	/* Style tracking */
-	Boolean isBold;
-	Boolean isItalic;
-	Boolean isUnderline;
-	Boolean isPre;
+	short boldDepth;
+	short italicDepth;
+	short underlineDepth;
+	short monospaceDepth;
+	short preDepth;
 	Boolean inScript;
 	Boolean inStyle;
 	Boolean inTitle;
-	short headingLevel;
+	short headingStack[16];
+	short headingDepth;
 	short listDepth;
 
 	/* Title capture */
@@ -60,10 +68,19 @@ typedef struct HtmlParser {
 	/* Whitespace collapsing */
 	Boolean lastWasSpace;
 	Boolean needsNewline;
+
+	/* Link tracking */
+	HtmlLinkRange *links;
+	short linkCount;
+	short linkCapacity;
+	char *activeLinkHref;
+	long activeLinkStart;
+	Boolean activeLinkHasStart;
 } HtmlParser;
 
 void HtmlParserInit(HtmlParser *p, TEHandle te, WindowPtr win);
 void HtmlParserFeed(HtmlParser *p, const char *data, short len);
 void HtmlParserEnd(HtmlParser *p);
+void HtmlParserDispose(HtmlParser *p);
 
 #endif

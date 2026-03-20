@@ -27,7 +27,7 @@ PageWindow* NewPageWindow();
 PageWindow* GetPageWindow(WindowPtr win);
 void InitPageWindows();
 void ClosePageWindow(PageWindow *pWin);
-void PageWindowNavigates(PageWindow *pWin, char *location);
+void PageWindowNavigate(PageWindow *pWin, char *location);
 void UpdatePageWindow(PageWindow *pWin);
 void PageWindowActivate(PageWindow *pWin);
 void PageWindowDeactivate(PageWindow *pWin);

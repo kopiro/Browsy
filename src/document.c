@@ -41,6 +41,7 @@ void DisposeDOMDocument(DOMDocument *doc) {
 	Handle h;
 	DisposeNodes(doc->rootNode);
 	DisposeTokenizer(doc->tokenizer);
+	HtmlParserDispose(&doc->parser);
 	h = RecoverHandle((Ptr)doc);
 	if (h) {
 		HUnlock(h);
@@ -63,4 +64,20 @@ void DOMDocumentFinishParse(DOMDocument *doc) {
 	if (doc->parserInited) {
 		HtmlParserEnd(&doc->parser);
 	}
+}
+
+const char *DOMDocumentGetLinkAtOffset(DOMDocument *doc, long offset)
+{
+	short i;
+
+	if (!doc) return NULL;
+
+	for (i = 0; i < doc->parser.linkCount; i++) {
+		HtmlLinkRange *link = &doc->parser.links[i];
+		if (offset >= link->startOffset && offset < link->endOffset) {
+			return link->href;
+		}
+	}
+
+	return NULL;
 }

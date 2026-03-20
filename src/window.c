@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <MacWindows.h>
 #include <Memory.h>
 #include <TextEdit.h>
@@ -51,6 +52,15 @@ void DebugSave(long bytes, Ptr buffer);
 void LoadingStarted(PageWindow *pWin);
 void LoadingEnded(PageWindow *pWin);
 static Boolean HomePageFileExists(void);
+static char *ResolveLinkHref(const char *baseUrl, const char *href);
+static Boolean HasUriScheme(const char *uri);
+static short FindSchemeEnd(const char *uri);
+static char *DuplicateStringRange(const char *start, const char *end);
+static char *NormalizeUrlPath(const char *path);
+static char *PathDirectoryJoin(const char *basePath, const char *href);
+static const char *FindAuthorityEnd(const char *uri);
+static Boolean HandleContentClick(PageWindow *pWin, TEHandle te, Point where);
+static Boolean IsContentLinkAtPoint(PageWindow *pWin, TEHandle te, Point where);
 
 pascal void ScrollAction(ControlHandle control, short part);
 
@@ -170,11 +180,13 @@ PageWindow* NewPageWindow() {
 	pWin->contentTE = contentTE;
 	//TEActivate(contentTE);
 	te = *contentTE;
-	te->txFont = kFontIDMonaco;
-	te->txFace = 0;
-	te->txSize = 9;
-	te->lineHeight = 12;
-	te->fontAscent = 9;
+	/*
+	 * Styled TextEdit stores its style handle in the txFont/txFace/txSize
+	 * area, so those fields must not be overwritten after TEStyleNew.
+	 * Keep line metrics dynamic so larger headings can render correctly.
+	 */
+	te->lineHeight = -1;
+	te->fontAscent = -1;
 
 	// Status bar TE
 	//destRect.left = viewRect.left = 2;
@@ -323,24 +335,27 @@ void PageWindowIdle(PageWindow *pWin) {
 	//ControlHandle ch;
 	Point mouse;
 	Cursor *cursor;
+	CursHandle cursorHandle;
 
 	if (pWin->focusTE && (pWin->focusTE != pWin->contentTE)) {
 		TEIdle(pWin->focusTE);
 	}
 
-	//SetPort(win);
-	GetMouse(&mouse);
 	SetPort(win);
+	GetMouse(&mouse);
 
 	//if (FindControl(mouse, win, &ch))
 
 	if (PtInRect(mouse, &(*(pWin->addressBarTE))->viewRect)) {
 		cursor = *GetCursor(iBeamCursor);
 	} else if (PtInRect(mouse, &(*(pWin->contentTE))->viewRect)) {
-		cursor = *GetCursor(iBeamCursor);
+		if (IsContentLinkAtPoint(pWin, pWin->contentTE, mouse)) {
+			cursorHandle = GetCursor(handCursor);
+			cursor = cursorHandle ? *cursorHandle : &qd.arrow;
+		} else {
+			cursor = *GetCursor(iBeamCursor);
+		}
 	} else {
-		//PageWindowKeyDown(pWin, 'a');
-		// if (mouse is over <a>) cursor = handCursor;
 		cursor = &qd.arrow;
 	}
 	SetCursor(cursor);
@@ -424,13 +439,14 @@ void PageWindowMouseDown(PageWindow *pWin, Point where, int modifiers) {
 			TEClick(where, (modifiers & shiftKey) != 0, te);
 		} else if (PtInRect(where, &((*(te = pWin->contentTE))->viewRect))) {
 			// click in page context text
-			//te = pWin->contentTE;
-			PageWindowFocusTE(pWin, te);
-			TEClick(where, (modifiers & shiftKey) != 0, te);
-			// hide insertion point
-			if ((*te)->selStart == (*te)->selEnd) {
-				TEDeactivate(te);
-				pWin->focusTE = NULL;
+			if (!HandleContentClick(pWin, te, where)) {
+				PageWindowFocusTE(pWin, te);
+				TEClick(where, (modifiers & shiftKey) != 0, te);
+				// hide insertion point
+				if ((*te)->selStart == (*te)->selEnd) {
+					TEDeactivate(te);
+					pWin->focusTE = NULL;
+				}
 			}
 		}
 	} else {
@@ -465,6 +481,226 @@ void PageWindowMouseDown(PageWindow *pWin, Point where, int modifiers) {
 				break;
 		}
 	}
+}
+
+static Boolean HandleContentClick(PageWindow *pWin, TEHandle te, Point where)
+{
+	long offset;
+	const char *href;
+	char *resolvedHref;
+
+	if (!pWin->document) return false;
+
+	offset = TEGetOffset(where, te);
+	href = DOMDocumentGetLinkAtOffset(pWin->document, offset);
+	if (!href) return false;
+
+	resolvedHref = ResolveLinkHref(pWin->history ? pWin->history->address : NULL,
+		href);
+	if (!resolvedHref) return false;
+
+	PageWindowNavigate(pWin, resolvedHref);
+	free(resolvedHref);
+	return true;
+}
+
+static Boolean IsContentLinkAtPoint(PageWindow *pWin, TEHandle te, Point where)
+{
+	long offset;
+
+	if (!pWin->document) return false;
+
+	offset = TEGetOffset(where, te);
+	return DOMDocumentGetLinkAtOffset(pWin->document, offset) != NULL;
+}
+
+static short FindSchemeEnd(const char *uri)
+{
+	short i;
+
+	if (!uri || !isalpha(uri[0])) return -1;
+	for (i = 1; uri[i]; i++) {
+		char c = uri[i];
+		if (c == ':') return i;
+		if (!(isalnum(c) || c == '+' || c == '-' || c == '.')) return -1;
+	}
+	return -1;
+}
+
+static Boolean HasUriScheme(const char *uri)
+{
+	return FindSchemeEnd(uri) > 0;
+}
+
+static char *DuplicateStringRange(const char *start, const char *end)
+{
+	long len;
+	char *copy;
+
+	if (!start || !end || end < start) return NULL;
+	len = end - start;
+	copy = malloc(len + 1);
+	if (!copy) return NULL;
+	memcpy(copy, start, len);
+	copy[len] = '\0';
+	return copy;
+}
+
+static const char *FindAuthorityEnd(const char *uri)
+{
+	const char *p;
+	short schemeEnd = FindSchemeEnd(uri);
+
+	if (schemeEnd < 0) return uri;
+	p = uri + schemeEnd + 1;
+	if (p[0] == '/' && p[1] == '/') {
+		p += 2;
+		while (*p && *p != '/' && *p != '?' && *p != '#') p++;
+	}
+	return p;
+}
+
+static char *NormalizeUrlPath(const char *path)
+{
+	char *normalized;
+	long len, i, outLen;
+
+	if (!path) return NULL;
+
+	len = strlen(path);
+	normalized = malloc(len + 2);
+	if (!normalized) return NULL;
+
+	outLen = 0;
+	for (i = 0; i <= len; ) {
+		long segStart = i;
+		long segLen;
+
+		while (path[i] && path[i] != '/') i++;
+		segLen = i - segStart;
+
+		if (segLen == 0) {
+			if (outLen == 0) normalized[outLen++] = '/';
+		} else if (segLen == 1 && path[segStart] == '.') {
+			/* Skip '.' segments. */
+		} else if (segLen == 2 && path[segStart] == '.' && path[segStart + 1] == '.') {
+			if (outLen > 1) {
+				outLen--;
+				while (outLen > 0 && normalized[outLen - 1] != '/') outLen--;
+			}
+			if (outLen == 0) normalized[outLen++] = '/';
+		} else {
+			if (outLen == 0 || normalized[outLen - 1] != '/') normalized[outLen++] = '/';
+			memcpy(normalized + outLen, path + segStart, segLen);
+			outLen += segLen;
+		}
+
+		if (path[i] == '/') i++;
+	}
+
+	if (outLen == 0) normalized[outLen++] = '/';
+	normalized[outLen] = '\0';
+	return normalized;
+}
+
+static char *PathDirectoryJoin(const char *basePath, const char *href)
+{
+	const char *lastSlash;
+	char *baseDir;
+	char *combined;
+	char *normalized;
+
+	lastSlash = strrchr(basePath ? basePath : "/", '/');
+	if (!lastSlash) {
+		baseDir = DuplicateStringRange("/", "/" + 1);
+	} else {
+		baseDir = DuplicateStringRange(basePath, lastSlash + 1);
+	}
+	if (!baseDir) return NULL;
+
+	combined = malloc(strlen(baseDir) + strlen(href) + 1);
+	if (!combined) {
+		free(baseDir);
+		return NULL;
+	}
+	strcpy(combined, baseDir);
+	strcat(combined, href);
+	free(baseDir);
+
+	normalized = NormalizeUrlPath(combined);
+	free(combined);
+	return normalized;
+}
+
+static char *ResolveLinkHref(const char *baseUrl, const char *href)
+{
+	short schemeEnd;
+	const char *authorityEnd;
+	char *prefix, *path, *resolved, *sanitized;
+
+	if (!href || !href[0]) return NULL;
+	if (HasUriScheme(href)) return url_sanitize((char *)href);
+	if (!baseUrl || !baseUrl[0]) return url_sanitize((char *)href);
+
+	schemeEnd = FindSchemeEnd(baseUrl);
+	if (schemeEnd < 0) return url_sanitize((char *)href);
+
+	if (href[0] == '#' || href[0] == '?') {
+		sanitized = malloc(strlen(baseUrl) + strlen(href) + 1);
+		if (!sanitized) return NULL;
+		strcpy(sanitized, baseUrl);
+		strcat(sanitized, href);
+		return sanitized;
+	}
+
+	if (href[0] == '/' && href[1] == '/') {
+		prefix = DuplicateStringRange(baseUrl, baseUrl + schemeEnd + 1);
+		if (!prefix) return NULL;
+		resolved = malloc(strlen(prefix) + strlen(href) + 1);
+		if (!resolved) {
+			free(prefix);
+			return NULL;
+		}
+		strcpy(resolved, prefix);
+		strcat(resolved, href);
+		free(prefix);
+		return resolved;
+	}
+
+	authorityEnd = FindAuthorityEnd(baseUrl);
+	if (href[0] == '/') {
+		prefix = DuplicateStringRange(baseUrl, authorityEnd);
+		if (!prefix) return NULL;
+		resolved = malloc(strlen(prefix) + strlen(href) + 1);
+		if (!resolved) {
+			free(prefix);
+			return NULL;
+		}
+		strcpy(resolved, prefix);
+		strcat(resolved, href);
+		free(prefix);
+		return resolved;
+	}
+
+	prefix = DuplicateStringRange(baseUrl, authorityEnd);
+	path = PathDirectoryJoin(authorityEnd, href);
+	if (!prefix || !path) {
+		free(prefix);
+		free(path);
+		return NULL;
+	}
+
+	resolved = malloc(strlen(prefix) + strlen(path) + 1);
+	if (!resolved) {
+		free(prefix);
+		free(path);
+		return NULL;
+	}
+	strcpy(resolved, prefix);
+	strcat(resolved, path);
+	free(prefix);
+	free(path);
+	return resolved;
 }
 
 pascal void ScrollAction(ControlHandle control, short part) {
@@ -1000,7 +1236,6 @@ void PageWindowNavigateHome(PageWindow *pWin) {
 		home = "about:Browsy";
 	}
 
-	//"http://www.lehnerstudios.com/newsite/";
 	// GetPrefStr(prefHomePage, home);
 	PageWindowNavigate(pWin, home);
 }

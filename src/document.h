@@ -29,5 +29,6 @@ void DisposeDOMDocument(DOMDocument *doc);
 void DOMDocumentParseAppend(DOMDocument *doc, Ptr data, long bytes);
 void DOMDocumentInitParser(DOMDocument *doc, TEHandle te, WindowPtr win);
 void DOMDocumentFinishParse(DOMDocument *doc);
+const char *DOMDocumentGetLinkAtOffset(DOMDocument *doc, long offset);
 
 #endif

@@ -76,6 +76,7 @@ $(BIN).dsk: $(BIN).bin
 	hmount $@ >/dev/null && \
 	hcopy -m $< : >/dev/null && \
 	if [ -f page.html ]; then hcopy -t page.html : && hattrib -t TEXT -c ttxt page.html; fi >/dev/null && \
+	if [ -f test.html ]; then hcopy -t test.html : && hattrib -t TEXT -c ttxt test.html; fi >/dev/null && \
 	humount >/dev/null
 
 %.o: %.c
