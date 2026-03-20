@@ -127,12 +127,25 @@ make system7-img
 
 This creates `emulator/System7.img` as an 80 MB HFS volume. You still need to
 install System 7 onto that image before `make run-sys7` will boot successfully.
-The checked-in Basilisk prefs mount the boot disk image, the target hard disk,
-and expose `emulator/system7-install/` via Basilisk's Unix/shared folder so the
-original Apple installer parts can be accessed inside the emulator.
+The checked-in Basilisk prefs mount the boot hard disk image and `Browsy.dsk`.
 
 ```sh
 make run-sys7
+```
+
+`make run-sys7` now also tries to open the mounted `Browsy` floppy and launch
+the `Browsy` app automatically after Finder comes up. If your System 7 boot is
+slower, tune the delay. This helper uses macOS `System Events`, so it may need
+Accessibility permission the first time it runs:
+
+```sh
+make run-sys7 SYS7_BOOT_DELAY=18
+```
+
+Disable the auto-launch helper if needed:
+
+```sh
+make run-sys7 SYS7_AUTOLAUNCH=0
 ```
 
 ## Stuff used / how it works

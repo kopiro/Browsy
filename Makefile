@@ -1,5 +1,8 @@
 BIN     = Browsy
 FLOPPY_DISK ?=
+SYS7_AUTOLAUNCH ?= 1
+SYS7_BOOT_DELAY ?= 12
+SYS7_OPEN_DELAY ?= 1
 TOOLCHAIN ?= /Retro68-build/toolchain
 ARCH    ?= m68k-apple-macos
 CC      = $(TOOLCHAIN)/bin/$(ARCH)-gcc
@@ -218,7 +221,12 @@ floppy: scripts/write-floppy.sh
 	$(QUIET_FLPY)./scripts/write-floppy.sh $(FLOPPY_DISK)
 
 run-sys7:
-	"$(CURDIR)/$(BASILISK_BIN)" --config "$(CURDIR)/$(BASILISK_PREFS_SYS7)"
+	"$(CURDIR)/scripts/run-sys7.sh" \
+		"$(CURDIR)/$(BASILISK_BIN)" \
+		"$(CURDIR)/$(BASILISK_PREFS_SYS7)" \
+		"$(SYS7_AUTOLAUNCH)" \
+		"$(SYS7_BOOT_DELAY)" \
+		"$(SYS7_OPEN_DELAY)"
 
 run-sys6:
 	"$(CURDIR)/$(MINI_VMAC_APP)/Contents/MacOS/minivmac" "$(CURDIR)/$(MINI_VMAC_SYS_DISK)" "$(CURDIR)/$(BIN).dsk"
